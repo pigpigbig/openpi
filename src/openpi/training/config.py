@@ -956,6 +956,37 @@ _CONFIGS = [
         exp_name="debug_pi05",
         wandb_enabled=False,
     ),
+        TrainConfig(
+        name="pi05_libero_low_mem_finetune",   # <— use this on the CLI
+        # pi0.5 + LoRA adapters on VLM and action expert
+        model=pi0_config.Pi0Config(
+            pi05=True,
+            action_horizon=10,
+            discrete_state_input=False,
+            paligemma_variant="gemma_2b_lora",
+            action_expert_variant="gemma_300m_lora",
+        ),
+        # initialize from pi05 base
+        weight_loader=weight_loaders.CheckpointWeightLoader(
+            "gs://openpi-assets/checkpoints/pi05_base/params"
+        ),
+        # freeze everything except LoRA params
+        freeze_filter=pi0_config.Pi0Config(
+            pi05=True,
+            action_horizon=10,
+            discrete_state_input=False,
+            paligemma_variant="gemma_2b_lora",
+            action_expert_variant="gemma_300m_lora",
+        ).get_freeze_filter(),
+        ema_decay=None,        # EMA off for LoRA
+        batch_size=8,          # drop to 6/4 if you OOM
+        num_train_steps=30_000,
+        data=LeRobotLiberoDataConfig(
+            repo_id="physical-intelligence/libero",
+            base_config=DataConfig(prompt_from_task=True),
+            extra_delta_transform=False,  # LIBERO is already delta-actions
+        ),
+    ),
     #
     # RoboArena configs.
     #
