@@ -62,8 +62,8 @@ def _save_io_bundle(
     wrist_img: np.ndarray,
     replan_steps: int,
     action_chunk: np.ndarray,
-    debug_last_layer_input: np.ndarray | None = None,
-    debug_last_layer_output: np.ndarray | None = None,
+    debug_last_layer_input: Optional[np.ndarray] = None,
+    debug_last_layer_output: Optional[np.ndarray] = None,
     save_images: bool = True,
 ) -> None:
     root.mkdir(parents=True, exist_ok=True)
