@@ -14,6 +14,7 @@ from openpi_client import image_tools
 from openpi_client import websocket_client_policy as _websocket_client_policy
 import tqdm
 import tyro
+from typing import Optional
 
 LIBERO_DUMMY_ACTION = [0.0] * 6 + [-1.0]
 LIBERO_ENV_RESOLUTION = 256  # resolution used to render training data
@@ -41,7 +42,7 @@ class Args:
     #################################################################################################################
     # Logging
     #################################################################################################################
-    log_dir: str | None = "data/libero/io_logs"  # Set to None to disable logs
+    log_dir: Optional[str] = "data/libero/io_logs"  # Set to None to disable logs
     log_images: bool = True                      # Save the preprocessed images we send to the policy
     log_debug_last_layer: bool = True            # If server returns last-layer input/output, save them
 
