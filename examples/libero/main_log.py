@@ -1,9 +1,11 @@
+# examples/libero/main_log.py
 import collections
 import dataclasses
 import logging
 import math
 import pathlib
 import json
+from typing import Optional
 
 import imageio
 from libero.libero import benchmark
@@ -14,7 +16,6 @@ from openpi_client import image_tools
 from openpi_client import websocket_client_policy as _websocket_client_policy
 import tqdm
 import tyro
-from typing import Optional
 
 LIBERO_DUMMY_ACTION = [0.0] * 6 + [-1.0]
 LIBERO_ENV_RESOLUTION = 256  # resolution used to render training data
@@ -43,8 +44,8 @@ class Args:
     # Logging
     #################################################################################################################
     log_dir: Optional[str] = "data/libero/io_logs"  # Set to None to disable logs
-    log_images: bool = True                      # Save the preprocessed images we send to the policy
-    log_debug_last_layer: bool = True            # If server returns last-layer input/output, save them
+    log_images: bool = True                         # Save the preprocessed images we send to the policy
+    log_debug_last_layer: bool = False              # If server returns last-layer input/output, save them
 
     #################################################################################################################
     # Utils
@@ -70,28 +71,40 @@ def _save_io_bundle(
 
     # Images (uint8)
     if save_images:
-        imageio.imwrite(root / f"{stem}_img.png", img)
-        imageio.imwrite(root / f"{stem}_wrist.png", wrist_img)
+        try:
+            imageio.imwrite(root / f"{stem}_img.png", img)
+            imageio.imwrite(root / f"{stem}_wrist.png", wrist_img)
+        except Exception as e:
+            logging.warning("Failed to write images for %s: %s", stem, e)
 
     # JSON summary (human-friendly)
     payload = {
         "prompt": str(prompt),
-        "state": state_vec.tolist(),
+        "state_len": int(state_vec.shape[0]),
+        "state_dtype": str(state_vec.dtype),
+        "image_shape": list(img.shape),
+        "wrist_image_shape": list(wrist_img.shape),
+        "image_dtype": str(img.dtype),
+        "wrist_image_dtype": str(wrist_img.dtype),
         "replan_steps": int(replan_steps),
         "action_chunk_shape": list(action_chunk.shape),
         "chosen_actions_shape": list(action_chunk[:replan_steps].shape),
     }
-    (root / f"{stem}_io.json").write_text(json.dumps(payload, indent=2))
+    try:
+        (root / f"{stem}_io.json").write_text(json.dumps(payload, indent=2))
+    except Exception as e:
+        logging.warning("Failed to write IO json for %s: %s", stem, e)
 
     # Full arrays (.npy) for exact reproducibility
-    np.save(root / f"{stem}_state.npy", state_vec)
-    np.save(root / f"{stem}_actions.npy", action_chunk)
-
-    # Optional debug activations (only if server supplied them)
-    if debug_last_layer_input is not None:
-        np.save(root / f"{stem}_last_layer_input.npy", debug_last_layer_input)
-    if debug_last_layer_output is not None:
-        np.save(root / f"{stem}_last_layer_output.npy", debug_last_layer_output)
+    try:
+        np.save(root / f"{stem}_state.npy", state_vec)
+        np.save(root / f"{stem}_actions.npy", action_chunk)
+        if debug_last_layer_input is not None:
+            np.save(root / f"{stem}_last_layer_input.npy", debug_last_layer_input)
+        if debug_last_layer_output is not None:
+            np.save(root / f"{stem}_last_layer_output.npy", debug_last_layer_output)
+    except Exception as e:
+        logging.warning("Failed to write arrays for %s: %s", stem, e)
 
 
 def eval_libero(args: Args) -> None:
@@ -102,7 +115,7 @@ def eval_libero(args: Args) -> None:
     benchmark_dict = benchmark.get_benchmark_dict()
     task_suite = benchmark_dict[args.task_suite_name]()
     num_tasks_in_suite = task_suite.n_tasks
-    logging.info(f"Task suite: {args.task_suite_name}")
+    logging.info("Task suite: %s", args.task_suite_name)
 
     pathlib.Path(args.video_out_path).mkdir(parents=True, exist_ok=True)
 
@@ -117,48 +130,39 @@ def eval_libero(args: Args) -> None:
     elif args.task_suite_name == "libero_90":
         max_steps = 400  # longest training demo has 373 steps
     else:
-        raise ValueError(f"Unknown task suite: {args.task_suite_name}")
+        raise ValueError("Unknown task suite: %s" % args.task_suite_name)
 
     client = _websocket_client_policy.WebsocketClientPolicy(args.host, args.port)
 
     # Start evaluation
     total_episodes, total_successes = 0, 0
     for task_id in tqdm.tqdm(range(num_tasks_in_suite)):
-        # Get task
         task = task_suite.get_task(task_id)
-
-        # Get default LIBERO initial states
         initial_states = task_suite.get_task_init_states(task_id)
-
-        # Initialize LIBERO environment and task description
         env, task_description = _get_libero_env(task, LIBERO_ENV_RESOLUTION, args.seed)
 
-        # Start episodes
         task_episodes, task_successes = 0, 0
         for episode_idx in tqdm.tqdm(range(args.num_trials_per_task)):
-            logging.info(f"\nTask: {task_description}")
+            logging.info("\nTask: %s", task_description)
 
-            # Reset environment
             env.reset()
             action_plan = collections.deque()
 
-            # Set initial states
             obs = env.set_init_state(initial_states[episode_idx])
 
-            # Setup
             t = 0
             replay_images = []
 
-            logging.info(f"Starting episode {task_episodes+1}...")
+            logging.info("Starting episode %d...", task_episodes + 1)
             while t < max_steps + args.num_steps_wait:
                 try:
-                    # Wait for dropped objects to settle
+                    # IMPORTANT: match baseline waiting for objects to settle
                     if t < args.num_steps_wait:
                         obs, reward, done, info = env.step(LIBERO_DUMMY_ACTION)
                         t += 1
                         continue
 
-                    # Preprocess images (rotate + pad/resize to what the model expects)
+                    # Preprocess images EXACTLY like baseline (rotate + resize_with_pad + uint8)
                     img = np.ascontiguousarray(obs["agentview_image"][::-1, ::-1])
                     wrist_img = np.ascontiguousarray(obs["robot0_eye_in_hand_image"][::-1, ::-1])
                     img = image_tools.convert_to_uint8(
@@ -168,11 +172,11 @@ def eval_libero(args: Args) -> None:
                         image_tools.resize_with_pad(wrist_img, args.resize_size, args.resize_size)
                     )
 
-                    # Save preprocessed image for replay video
+                    # For replay video
                     replay_images.append(img)
 
                     if not action_plan:
-                        # Build element sent to the policy
+                        # Build element EXACTLY like baseline
                         state_vec = np.concatenate(
                             (
                                 obs["robot0_eef_pos"],
@@ -187,28 +191,30 @@ def eval_libero(args: Args) -> None:
                             "prompt": str(task_description),
                         }
 
-                        # Call policy
+                        # Inference
                         result = client.infer(element)
-
                         # Expected: result["actions"] is (H, 7) or similar
                         action_chunk = np.asarray(result["actions"])
 
-                        # Optional: debug fields (if server provided them)
-                        debug_input = result.get("last_layer_input") if args.log_debug_last_layer else None
-                        debug_output = result.get("last_layer_output") if args.log_debug_last_layer else None
-                        if debug_input is not None:
-                            debug_input = np.asarray(debug_input)
-                        if debug_output is not None:
-                            debug_output = np.asarray(debug_output)
+                        # Optional debug fields (only if server provided them)
+                        debug_input = None
+                        debug_output = None
+                        if args.log_debug_last_layer:
+                            if "last_layer_input" in result:
+                                debug_input = np.asarray(result["last_layer_input"])
+                            if "last_layer_output" in result:
+                                debug_output = np.asarray(result["last_layer_output"])
 
-                        # Sanity
-                        assert (
-                            len(action_chunk) >= args.replan_steps
-                        ), f"We want to replan every {args.replan_steps} steps, but policy only predicts {len(action_chunk)} steps."
+                        # Sanity check identical to baseline
+                        if len(action_chunk) < args.replan_steps:
+                            raise RuntimeError(
+                                "We want to replan every %d steps, but policy only predicts %d steps."
+                                % (args.replan_steps, len(action_chunk))
+                            )
 
-                        # Save an IO bundle for this replan
+                        # Save IO bundle (does NOT change behavior)
                         if args.log_dir is not None:
-                            stem = f"task{task_id:02d}_ep{episode_idx:03d}_t{t:04d}"
+                            stem = "task%02d_ep%03d_t%04d" % (task_id, episode_idx, t)
                             _save_io_bundle(
                                 root=pathlib.Path(args.log_dir),
                                 stem=stem,
@@ -223,12 +229,12 @@ def eval_libero(args: Args) -> None:
                                 save_images=bool(args.log_images),
                             )
 
-                        # Queue the first K actions
+                        # Queue first K actions (unchanged)
                         action_plan.extend(action_chunk[: args.replan_steps])
 
                     action = action_plan.popleft()
 
-                    # Step environment
+                    # Step env (unchanged)
                     obs, reward, done, info = env.step(action.tolist())
                     if done:
                         task_successes += 1
@@ -237,32 +243,32 @@ def eval_libero(args: Args) -> None:
                     t += 1
 
                 except Exception as e:
-                    logging.error(f"Caught exception: {e}")
+                    logging.error("Caught exception: %s", e)
                     break
 
             task_episodes += 1
             total_episodes += 1
 
-            # Save replay video
             suffix = "success" if done else "failure"
             task_segment = task_description.replace(" ", "_")
-            imageio.mimwrite(
-                pathlib.Path(args.video_out_path) / f"rollout_{task_segment}_{suffix}.mp4",
-                [np.asarray(x) for x in replay_images],
-                fps=10,
-            )
+            try:
+                imageio.mimwrite(
+                    pathlib.Path(args.video_out_path) / f"rollout_{task_segment}_{suffix}.mp4",
+                    [np.asarray(x) for x in replay_images],
+                    fps=10,
+                )
+            except Exception as e:
+                logging.warning("Failed to write video for episode: %s", e)
 
-            # Progress logs
-            logging.info(f"Success: {done}")
-            logging.info(f"# episodes completed so far: {total_episodes}")
-            logging.info(f"# successes: {total_successes} ({total_successes / total_episodes * 100:.1f}%)")
+            logging.info("Success: %s", done)
+            logging.info("# episodes completed so far: %d", total_episodes)
+            logging.info("# successes: %d (%.1f%%)", total_successes, (total_successes / max(total_episodes, 1) * 100.0))
 
-        # Task summaries
-        logging.info(f"Current task success rate: {float(task_successes) / float(task_episodes)}")
-        logging.info(f"Current total success rate: {float(total_successes) / float(total_episodes)}")
+        logging.info("Current task success rate: %f", float(task_successes) / float(max(task_episodes, 1)))
+        logging.info("Current total success rate: %f", float(total_successes) / float(max(total_episodes, 1)))
 
-    logging.info(f"Total success rate: {float(total_successes) / float(total_episodes)}")
-    logging.info(f"Total episodes: {total_episodes}")
+    logging.info("Total success rate: %f", float(total_successes) / float(max(total_episodes, 1)))
+    logging.info("Total episodes: %d", total_episodes)
 
 
 def _get_libero_env(task, resolution, seed):
