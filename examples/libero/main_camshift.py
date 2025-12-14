@@ -3,6 +3,7 @@ import dataclasses
 import logging
 import math
 import pathlib
+from typing import Optional
 
 import imageio
 import numpy as np
@@ -35,23 +36,68 @@ class Args:
         "libero_spatial"  # Task suite. Options: libero_spatial, libero_object, libero_goal, libero_10, libero_90
     )
     num_steps_wait: int = 10  # Number of steps to wait for objects to stabilize in sim
-    num_trials_per_task: int = 50  # Number of rollouts per task
+    num_trials_per_task: int = 1  # Number of rollouts per task
 
-    # Camera perturbation: pitch angle in degrees for the "agentview" camera
-    camera_pitch_deg: float = 45.0
+    # Camera perturbation: offsets for the "agentview" camera
+    camera_pitch_deg: float = 0.0  # tilt toward the table (positive tilts up less steeply)
+    camera_yaw_deg: float = 45.0  # move camera around table normal (rotate location)
+    camera_fovy_deg: Optional[float] = 80.0  # widen field of view to capture the whole table
 
     #################################################################################################################
     # Utils
     #################################################################################################################
     video_out_path: str = "data/libero/videos_camshift"  # Path to save videos
-    save_video_every: int = 10  # save video every N episodes
+    save_video_every: int = 1  # save video every N episodes
 
     seed: int = 7  # Random Seed (for reproducibility)
 
 
-def _apply_camera_shift(env, degrees: float) -> None:
+def _rotmat_to_quat(R: np.ndarray) -> np.ndarray:
+    """Convert 3x3 rotation matrix (world-from-camera) to MuJoCo quaternion (w, x, y, z)."""
+    m00, m01, m02 = R[0]
+    m10, m11, m12 = R[1]
+    m20, m21, m22 = R[2]
+    trace = m00 + m11 + m22
+    if trace > 0.0:
+        S = math.sqrt(trace + 1.0) * 2.0
+        qw = 0.25 * S
+        qx = (m21 - m12) / S
+        qy = (m02 - m20) / S
+        qz = (m10 - m01) / S
+    elif (m00 > m11) and (m00 > m22):
+        S = math.sqrt(1.0 + m00 - m11 - m22) * 2.0
+        qw = (m21 - m12) / S
+        qx = 0.25 * S
+        qy = (m01 + m10) / S
+        qz = (m02 + m20) / S
+    elif m11 > m22:
+        S = math.sqrt(1.0 + m11 - m00 - m22) * 2.0
+        qw = (m02 - m20) / S
+        qx = (m01 + m10) / S
+        qy = 0.25 * S
+        qz = (m12 + m21) / S
+    else:
+        S = math.sqrt(1.0 + m22 - m00 - m11) * 2.0
+        qw = (m10 - m01) / S
+        qx = (m02 + m20) / S
+        qy = (m12 + m21) / S
+        qz = 0.25 * S
+    q = np.array([qw, qx, qy, qz], dtype=np.float64)
+    return q / (np.linalg.norm(q) + 1e-9)
+
+
+def _quat_apply(q: np.ndarray, v: np.ndarray) -> np.ndarray:
+    """Rotate vector v by quaternion q (w, x, y, z)."""
+    w, x, y, z = q
+    qvec = np.array([x, y, z], dtype=np.float64)
+    uv = np.cross(qvec, v)
+    uuv = np.cross(qvec, uv)
+    return v + 2.0 * (w * uv + uuv)
+
+
+def _apply_camera_shift(env, pitch_deg: float, yaw_deg: float = 0.0, fovy_deg: Optional[float] = None) -> None:
     """
-    Apply a pitch rotation of `degrees` to the MuJoCo camera named 'agentview'.
+    Apply pitch/yaw rotations to the MuJoCo camera named 'agentview', keeping the original base orientation.
 
     We do this after env construction and after each reset, since some environments
     can rebuild the underlying MuJoCo model on reset.
@@ -77,22 +123,98 @@ def _apply_camera_shift(env, degrees: float) -> None:
         logging.warning(f"[camshift] Could not find camera 'agentview': {e}")
         return
 
-    theta = math.radians(degrees)
-    # MuJoCo quaternions are (w, x, y, z); here we pitch around x-axis
-    w = math.cos(theta / 2.0)
-    x = math.sin(theta / 2.0)
-    y = 0.0
-    z = 0.0
-    quat = np.array([w, x, y, z], dtype=np.float64)
+    # NOTE: positive `camera_pitch_deg` tilts the camera downward; use positive to tilt up if desired.
+    # In practice, the previous sign flipped the pitch; here we align sign so +pitch looks up less steeply.
+    pitch_theta = math.radians(pitch_deg)
+    pitch_quat = np.array(
+        [math.cos(pitch_theta / 2.0), math.sin(pitch_theta / 2.0), 0.0, 0.0],
+        dtype=np.float64,
+    )
+    yaw_theta = math.radians(yaw_deg)
 
-    model.cam_quat[cam_id] = quat
+    # Grab (or cache) the original camera orientation/position/target so repeated calls don't accumulate rotation.
+    base_cache_attr = "_camshift_base_quat"
+    model_cache_attr = "_camshift_model_id"
+    pos_cache_attr = "_camshift_base_pos"
+    target_cache_attr = "_camshift_base_target"
+    base_quat = getattr(env, base_cache_attr, None)
+    cached_model_id = getattr(env, model_cache_attr, None)
+    base_pos = getattr(env, pos_cache_attr, None)
+    base_target = getattr(env, target_cache_attr, None)
+    if base_quat is None or base_pos is None or base_target is None or cached_model_id != id(model):
+        base_quat = np.array(model.cam_quat[cam_id], dtype=np.float64)
+        base_pos = np.array(model.cam_pos[cam_id], dtype=np.float64)
+        # Assume camera looks along its -z axis in local frame to define a default target.
+        forward = _quat_apply(base_quat, np.array([0.0, 0.0, -1.0], dtype=np.float64))
+        base_target = base_pos + forward
+        try:
+            setattr(env, base_cache_attr, base_quat)
+            setattr(env, pos_cache_attr, base_pos)
+            setattr(env, target_cache_attr, base_target)
+            setattr(env, model_cache_attr, id(model))
+        except Exception:
+            pass
+
+    # Move camera around table normal: rotate the base position about z by yaw_deg.
+    cos_y, sin_y = math.cos(yaw_theta), math.sin(yaw_theta)
+    Rz = np.array([[cos_y, -sin_y, 0.0], [sin_y, cos_y, 0.0], [0.0, 0.0, 1.0]], dtype=np.float64)
+    new_pos = Rz @ base_pos
+
+    # Build a look-at orientation so the camera points to the base target from its new position, then apply extra pitch.
+    target = base_target
+    forward_vec = target - new_pos
+    norm_f = np.linalg.norm(forward_vec)
+    if norm_f < 1e-6:
+        forward_vec = np.array([0.0, 0.0, -1.0], dtype=np.float64)
+        norm_f = 1.0
+    f = forward_vec / norm_f
+    up = np.array([0.0, 0.0, 1.0], dtype=np.float64)
+    if abs(np.dot(f, up)) > 0.99:
+        up = np.array([0.0, 1.0, 0.0], dtype=np.float64)
+    s = np.cross(f, up)
+    s /= np.linalg.norm(s) + 1e-9
+    u = np.cross(s, f)
+    R = np.stack(
+        [
+            [s[0], u[0], -f[0]],
+            [s[1], u[1], -f[1]],
+            [s[2], u[2], -f[2]],
+        ],
+        axis=0,
+    )
+    lookat_quat = _rotmat_to_quat(R)
+
+    # Apply additional pitch around the camera x-axis in camera frame.
+    lw, lx, ly, lz = lookat_quat
+    pw, px, py, pz = pitch_quat
+    composed = np.array(
+        [
+            lw * pw - lx * px - ly * py - lz * pz,
+            lw * px + lx * pw + ly * pz - lz * py,
+            lw * py - lx * pz + ly * pw + lz * px,
+            lw * pz + lx * py - ly * px + lz * pw,
+        ],
+        dtype=np.float64,
+    )
+    composed /= np.linalg.norm(composed) + 1e-9
+
+    model.cam_pos[cam_id] = new_pos
+    model.cam_quat[cam_id] = composed
+    if fovy_deg is not None:
+        try:
+            model.cam_fovy[cam_id] = fovy_deg
+        except Exception as e:
+            logging.warning(f"[camshift] Failed to set fovy: {e}")
     try:
         sim.forward()
     except Exception:
         # Not fatal; the new orientation will still be picked up on the next sim step
         pass
 
-    logging.info(f"[camshift] Set 'agentview' camera pitch to {degrees} deg, quat={quat}")
+    logging.info(
+        f"[camshift] Set 'agentview' yaw_pos={yaw_deg} deg, pitch={pitch_deg} deg, fovy={fovy_deg}, "
+        f"base_pos={base_pos}, new_pos={new_pos}, base_quat={base_quat}, new_quat={composed}"
+    )
 
 
 def eval_libero(args: Args) -> None:
@@ -104,7 +226,10 @@ def eval_libero(args: Args) -> None:
     task_suite = benchmark_dict[args.task_suite_name]()
     num_tasks_in_suite = task_suite.n_tasks
     logging.info(f"Task suite: {args.task_suite_name}")
-    logging.info(f"[camshift] camera_pitch_deg = {args.camera_pitch_deg}")
+    logging.info(
+        f"[camshift] camera_pitch_deg = {args.camera_pitch_deg}, "
+        f"camera_yaw_deg = {args.camera_yaw_deg}, camera_fovy_deg = {args.camera_fovy_deg}"
+    )
 
     pathlib.Path(args.video_out_path).mkdir(parents=True, exist_ok=True)
 
@@ -138,6 +263,8 @@ def eval_libero(args: Args) -> None:
             LIBERO_ENV_RESOLUTION,
             args.seed,
             args.camera_pitch_deg,
+            args.camera_yaw_deg,
+            args.camera_fovy_deg,
         )
 
         # Start episodes
@@ -147,13 +274,13 @@ def eval_libero(args: Args) -> None:
 
             # Reset environment and re-apply camera shift
             env.reset()
-            _apply_camera_shift(env, args.camera_pitch_deg)
+            _apply_camera_shift(env, args.camera_pitch_deg, args.camera_yaw_deg, args.camera_fovy_deg)
 
             action_plan = collections.deque()
 
             # Set initial states (and re-apply camera shift to be safe)
             obs = env.set_init_state(initial_states[episode_idx])
-            _apply_camera_shift(env, args.camera_pitch_deg)
+            _apply_camera_shift(env, args.camera_pitch_deg, args.camera_yaw_deg, args.camera_fovy_deg)
 
             # Setup
             t = 0
@@ -257,14 +384,21 @@ def eval_libero(args: Args) -> None:
     logging.info(f"Total episodes: {total_episodes}")
 
 
-def _get_libero_env(task, resolution, seed, camera_pitch_deg: float):
+def _get_libero_env(
+    task,
+    resolution,
+    seed,
+    camera_pitch_deg: float,
+    camera_yaw_deg: float,
+    camera_fovy_deg: Optional[float],
+):
     """Initializes and returns the LIBERO environment, along with the task description."""
     task_description = task.language
     task_bddl_file = pathlib.Path(get_libero_path("bddl_files")) / task.problem_folder / task.bddl_file
     env_args = {"bddl_file_name": task_bddl_file, "camera_heights": resolution, "camera_widths": resolution}
     env = OffScreenRenderEnv(**env_args)
     env.seed(seed)  # IMPORTANT: seed seems to affect object positions even when using fixed initial state
-    _apply_camera_shift(env, camera_pitch_deg)
+    _apply_camera_shift(env, camera_pitch_deg, camera_yaw_deg, camera_fovy_deg)
     return env, task_description
 
 
