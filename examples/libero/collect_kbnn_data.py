@@ -157,6 +157,19 @@ def _apply_camera_shift_for_render(model, cam_id, base_pos, pitch_deg, yaw_deg, 
     return frame
 
 
+def _quat2axisangle(quat):
+    """Convert quaternion (x, y, z, w) to axis-angle (3,)."""
+    quat = np.array(quat, dtype=np.float64)
+    if quat[3] > 1.0:
+        quat[3] = 1.0
+    elif quat[3] < -1.0:
+        quat[3] = -1.0
+    den = np.sqrt(max(1.0 - quat[3] * quat[3], 0.0))
+    if math.isclose(den, 0.0):
+        return np.zeros(3, dtype=np.float64)
+    return (quat[:3] * 2.0 * math.acos(quat[3])) / den
+
+
 def collect(args: Args) -> None:
     logging.basicConfig(level=getattr(logging, args.log_level.upper(), logging.INFO))
 
@@ -227,7 +240,7 @@ def collect(args: Args) -> None:
                     np.concatenate(
                         (
                             obs["robot0_eef_pos"],
-                            obs["robot0_eef_quat"],
+                            _quat2axisangle(obs["robot0_eef_quat"]),
                             obs["robot0_gripper_qpos"],
                         )
                     ).astype(np.float32)
