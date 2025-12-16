@@ -226,9 +226,9 @@ def collect(args: Args) -> None:
                     t += 1
                     continue
 
-                # preprocess images (no rotation)
-                img = np.ascontiguousarray(obs["agentview_image"])
-                wrist_img = np.ascontiguousarray(obs["robot0_eye_in_hand_image"])
+                # preprocess images (match main.py: flip 180 degrees)
+                img = np.ascontiguousarray(obs["agentview_image"][::-1, ::-1])
+                wrist_img = np.ascontiguousarray(obs["robot0_eye_in_hand_image"][::-1, ::-1])
                 img = image_tools.convert_to_uint8(image_tools.resize_with_pad(img, args.resize_size, args.resize_size))
                 wrist_img = image_tools.convert_to_uint8(
                     image_tools.resize_with_pad(wrist_img, args.resize_size, args.resize_size)
