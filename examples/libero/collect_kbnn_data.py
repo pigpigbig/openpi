@@ -8,6 +8,7 @@ and saves only successful episodes to disk as compressed .npz files.
 import collections
 import dataclasses
 import logging
+import math
 import pathlib
 from typing import Optional
 
@@ -41,6 +42,11 @@ class Args:
     # Preprocessing
     resize_size: int = 224
 
+    # Camshift target view (match main_camshift.py)
+    camera_pitch_deg: float = 0.0
+    camera_yaw_deg: float = 45.0
+    camera_fovy_deg: Optional[float] = 80.0
+
     # Output
     output_dir: str = "data/libero/kbnn_dataset"
     save_videos: bool = False
@@ -58,6 +64,97 @@ def _get_libero_env(task, resolution, seed):
     env = OffScreenRenderEnv(**env_args)
     env.seed(seed)
     return env
+
+
+def _rotmat_to_quat(R: np.ndarray) -> np.ndarray:
+    m00, m01, m02 = R[0]
+    m10, m11, m12 = R[1]
+    m20, m21, m22 = R[2]
+    trace = m00 + m11 + m22
+    if trace > 0.0:
+        S = math.sqrt(trace + 1.0) * 2.0
+        qw = 0.25 * S
+        qx = (m21 - m12) / S
+        qy = (m02 - m20) / S
+        qz = (m10 - m01) / S
+    elif (m00 > m11) and (m00 > m22):
+        S = math.sqrt(1.0 + m00 - m11 - m22) * 2.0
+        qw = (m21 - m12) / S
+        qx = 0.25 * S
+        qy = (m01 + m10) / S
+        qz = (m02 + m20) / S
+    elif m11 > m22:
+        S = math.sqrt(1.0 + m11 - m00 - m22) * 2.0
+        qw = (m02 - m20) / S
+        qx = (m01 + m10) / S
+        qy = 0.25 * S
+        qz = (m12 + m21) / S
+    else:
+        S = math.sqrt(1.0 + m22 - m00 - m11) * 2.0
+        qw = (m10 - m01) / S
+        qx = (m02 + m20) / S
+        qy = (m12 + m21) / S
+        qz = 0.25 * S
+    q = np.array([qw, qx, qy, qz], dtype=np.float64)
+    return q / (np.linalg.norm(q) + 1e-9)
+
+
+def _apply_camera_shift_for_render(model, cam_id, base_pos, pitch_deg, yaw_deg, fovy_deg, height, width, sim):
+    """Temporarily apply camshift to render a frame, then restore."""
+    orig_pos = np.array(model.cam_pos[cam_id], copy=True)
+    orig_quat = np.array(model.cam_quat[cam_id], copy=True)
+    orig_fovy = float(model.cam_fovy[cam_id])
+
+    pitch_theta = math.radians(pitch_deg)
+    yaw_theta = math.radians(yaw_deg)
+
+    # rotate position about z by yaw
+    cos_y, sin_y = math.cos(yaw_theta), math.sin(yaw_theta)
+    Rz = np.array([[cos_y, -sin_y, 0.0], [sin_y, cos_y, 0.0], [0.0, 0.0, 1.0]], dtype=np.float64)
+    new_pos = Rz @ base_pos
+
+    # look-at to base target (assume -z forward from base pose)
+    forward = np.array([0.0, 0.0, -1.0], dtype=np.float64)
+    target = new_pos + forward
+    f = target - new_pos
+    f /= np.linalg.norm(f) + 1e-9
+    up = np.array([0.0, 0.0, 1.0], dtype=np.float64)
+    if abs(np.dot(f, up)) > 0.99:
+        up = np.array([0.0, 1.0, 0.0], dtype=np.float64)
+    s = np.cross(f, up)
+    s /= np.linalg.norm(s) + 1e-9
+    u = np.cross(s, f)
+    R = np.stack([[s[0], u[0], -f[0]], [s[1], u[1], -f[1]], [s[2], u[2], -f[2]]], axis=0)
+    look_quat = _rotmat_to_quat(R)
+
+    # apply additional pitch about camera x-axis
+    pw, px, py, pz = math.cos(pitch_theta / 2.0), math.sin(pitch_theta / 2.0), 0.0, 0.0
+    lw, lx, ly, lz = look_quat
+    composed = np.array(
+        [
+            lw * pw - lx * px - ly * py - lz * pz,
+            lw * px + lx * pw + ly * pz - lz * py,
+            lw * py - lx * pz + ly * pw + lz * px,
+            lw * pz + lx * py - ly * px + lz * pw,
+        ],
+        dtype=np.float64,
+    )
+    composed /= np.linalg.norm(composed) + 1e-9
+
+    model.cam_pos[cam_id] = new_pos
+    model.cam_quat[cam_id] = composed
+    if fovy_deg is not None:
+        model.cam_fovy[cam_id] = fovy_deg
+
+    sim.forward()
+    frame = sim.render(height=height, width=width, camera_name="agentview")
+
+    # restore
+    model.cam_pos[cam_id] = orig_pos
+    model.cam_quat[cam_id] = orig_quat
+    model.cam_fovy[cam_id] = orig_fovy
+    sim.forward()
+    return frame
 
 
 def collect(args: Args) -> None:
@@ -100,9 +197,14 @@ def collect(args: Args) -> None:
             done = False
 
             frames = []
+            camshift_frames = []
             wrist_frames = []
             states = []
             actions = []
+
+            model = env.sim.model if hasattr(env, "sim") else env.env.sim.model
+            cam_id = model.camera_name2id("agentview")
+            base_pos = np.array(model.cam_pos[cam_id], dtype=np.float64)
 
             while t < args.max_steps:
                 # let objects settle
@@ -147,6 +249,21 @@ def collect(args: Args) -> None:
                 obs, reward, done, info = env.step(action.tolist())
                 t += 1
 
+                # camshift render (target view) without affecting policy input
+                camshift_img = _apply_camera_shift_for_render(
+                    model,
+                    cam_id,
+                    base_pos,
+                    args.camera_pitch_deg,
+                    args.camera_yaw_deg,
+                    args.camera_fovy_deg,
+                    args.resize_size,
+                    args.resize_size,
+                    env.sim if hasattr(env, "sim") else env.env.sim,
+                )
+                camshift_img = image_tools.convert_to_uint8(camshift_img)
+                camshift_frames.append(camshift_img)
+
                 if done:
                     break
 
@@ -156,7 +273,8 @@ def collect(args: Args) -> None:
                 ep_path = env_dir / f"ep_{successes:04d}.npz"
                 np.savez_compressed(
                     ep_path,
-                    images=np.stack(frames, axis=0),
+                    images=np.stack(frames, axis=0),  # default camera (policy input)
+                    camshift_images=np.stack(camshift_frames, axis=0),  # target camshift view
                     wrist_images=np.stack(wrist_frames, axis=0),
                     states=np.stack(states, axis=0),
                     actions=np.stack(actions, axis=0),
