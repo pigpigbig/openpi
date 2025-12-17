@@ -31,6 +31,7 @@ from pathlib import Path
 import numpy as np
 import torch
 from torch.utils.data import Dataset, DataLoader
+from safetensors.torch import load_file
 
 # Ensure repo root on path so KBNN2.py and weight_initialization.py are importable.
 ROOT = Path(__file__).resolve().parents[1]
@@ -86,7 +87,10 @@ def main():
     cfg = pi0_config.Pi0Config(pi05=True)
     model = pi0_pytorch.PI0Pytorch(cfg).to(device)
     # Load weights
-    ckpt = torch.load(os.path.join(args.checkpoint_dir, "pytorch_model.bin"), map_location=device)
+    safetensor_path = os.path.join(args.checkpoint_dir, "model.safetensors")
+    if not os.path.isfile(safetensor_path):
+        raise FileNotFoundError(f"Expected model.safetensors in {args.checkpoint_dir}")
+    ckpt = load_file(safetensor_path, device=device)
     model.load_state_dict(ckpt, strict=False)
     model.eval()
     for p in model.parameters():
