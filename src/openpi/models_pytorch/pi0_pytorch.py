@@ -141,6 +141,71 @@ class PI0Pytorch(nn.Module):
 
         logging.info("Disabled gradient checkpointing for PI0Pytorch model")
 
+    @torch.no_grad()
+    def encode_for_actions(self, images, wrist_images, states):
+        """Extract action-expert pre-head features given images/wrist/state.
+
+        Args:
+            images: np.ndarray or torch.Tensor [B, T, H, W, 3] uint8 or float in [0,255] / [-1,1]
+            wrist_images: same shape as images for wrist cam.
+            states: np.ndarray or torch.Tensor [B, T, 8] (pos+axis-angle+gripper)
+        Returns:
+            feats: torch.Tensor [B*T, action_expert_width] from the last action token.
+        """
+        device = self.action_out_proj.weight.device
+        imgs = torch.as_tensor(images, device=device)
+        wrists = torch.as_tensor(wrist_images, device=device)
+        st = torch.as_tensor(states, device=device, dtype=torch.float32)
+
+        if imgs.dtype == torch.uint8:
+            imgs = imgs.float() / 255.0 * 2 - 1
+        if wrists.dtype == torch.uint8:
+            wrists = wrists.float() / 255.0 * 2 - 1
+
+        B, T = imgs.shape[:2]
+        imgs = imgs.view(B * T, *imgs.shape[2:]).permute(0, 3, 1, 2)
+        wrists = wrists.view(B * T, *wrists.shape[2:]).permute(0, 3, 1, 2)
+        st = st.view(B * T, -1)
+
+        img_masks = [
+            torch.ones(B * T, dtype=torch.bool, device=device),
+            torch.ones(B * T, dtype=torch.bool, device=device),
+        ]
+        images_list = [imgs, wrists]
+
+        # use empty language tokens
+        lang_tokens = torch.zeros(B * T, 1, dtype=torch.long, device=device)
+        lang_masks = torch.ones(B * T, 1, dtype=torch.bool, device=device)
+
+        prefix_embs, prefix_pad_masks, prefix_att_masks = self.embed_prefix(images_list, img_masks, lang_tokens, lang_masks)
+
+        noisy_actions = torch.zeros(B * T, self.config.action_horizon, self.config.action_dim, device=device)
+        timestep = torch.ones(B * T, device=device)
+        suffix_embs, suffix_pad_masks, suffix_att_masks, adarms_cond = self.embed_suffix(st, noisy_actions, timestep)
+
+        pad_masks = torch.cat([prefix_pad_masks, suffix_pad_masks], dim=1)
+        att_masks = torch.cat([prefix_att_masks, suffix_att_masks], dim=1)
+        att_2d_masks = make_att_2d_masks(pad_masks, att_masks)
+        position_ids = torch.cumsum(pad_masks, dim=1) - 1
+        att_2d_masks_4d = self._prepare_attention_masks_4d(att_2d_masks)
+
+        def forward_func(prefix_embs, suffix_embs, att_2d_masks_4d, position_ids, adarms_cond):
+            (_, suffix_out), _ = self.paligemma_with_expert.forward(
+                attention_mask=att_2d_masks_4d,
+                position_ids=position_ids,
+                past_key_values=None,
+                inputs_embeds=[prefix_embs, suffix_embs],
+                use_cache=False,
+                adarms_cond=[None, adarms_cond],
+            )
+            return suffix_out
+
+        suffix_out = self._apply_checkpoint(
+            forward_func, prefix_embs, suffix_embs, att_2d_masks_4d, position_ids, adarms_cond
+        )
+        suffix_out = suffix_out[:, -self.config.action_horizon :]  # (B*T, H, width)
+        return suffix_out[:, -1, :]
+
     def is_gradient_checkpointing_enabled(self):
         """Check if gradient checkpointing is enabled."""
         return self.gradient_checkpointing_enabled
