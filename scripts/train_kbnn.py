@@ -25,11 +25,17 @@ Run example:
 import argparse
 import glob
 import os
+import sys
 from pathlib import Path
 
 import numpy as np
 import torch
 from torch.utils.data import Dataset, DataLoader
+
+# Ensure repo root on path so KBNN2.py and weight_initialization.py are importable.
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 from KBNN2 import KBNN
 from weight_initialization import initialize_weights
