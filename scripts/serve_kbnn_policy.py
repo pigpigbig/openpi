@@ -6,6 +6,7 @@ from pathlib import Path
 import torch
 import tyro
 
+from openpi.training import checkpoints as _checkpoints
 from openpi.policies import policy as _policy
 from openpi.policies import policy_config as _policy_config
 from openpi.serving import websocket_policy_server
@@ -27,24 +28,24 @@ class KBNNActionHead(torch.nn.Module):
         # x: (B, H, D) or (N, D)
         orig_shape = x.shape
         if x.ndim == 3:
-            b, h, d = x.shape
-            x = x.reshape(b * h, d)
+            batch_size, horizon, width = x.shape
+            x = x.reshape(batch_size * horizon, width)
         elif x.ndim == 2:
             pass
         else:
             raise ValueError(f"Expected 2D or 3D tensor, got shape={orig_shape}")
 
-        h = x.to(dtype=torch.float32)
+        hidden = x.to(dtype=torch.float32)
         for layer_idx, mw in enumerate(self.mws):
-            ones = torch.ones(h.shape[0], 1, dtype=h.dtype, device=h.device)
-            h_aug = torch.cat([h, ones], dim=1)  # (N, in+1)
-            h = h_aug @ mw.T  # (N, out)
+            ones = torch.ones(hidden.shape[0], 1, dtype=hidden.dtype, device=hidden.device)
+            hidden_aug = torch.cat([hidden, ones], dim=1)  # (N, in+1)
+            hidden = hidden_aug @ mw.T  # (N, out)
             if layer_idx != len(self.mws) - 1:
-                h = torch.relu(h)
+                hidden = torch.relu(hidden)
 
         if len(orig_shape) == 3:
-            return h.reshape(b, h, -1)
-        return h
+            return hidden.reshape(batch_size, horizon, -1)
+        return hidden
 
 
 def _load_kbnn_mws(kbnn_checkpoint: str, device: str) -> list[torch.Tensor]:
@@ -78,6 +79,11 @@ class Args:
     # Device for torch policy: "cuda", "cuda:0", or "cpu".
     pytorch_device: str | None = None
 
+    # Assets directory containing norm stats for the LIBERO dataset (e.g. from the original JAX checkpoint step dir).
+    # This should point to the `assets/` folder that contains `<asset_id>/norm_stats.json`.
+    # Example: `/media/data-ssd-2/qiaoan_ckpt/pi05_29999/assets`
+    norm_stats_assets_dir: str | None = None
+
     # KBNN checkpoint (from scripts/train_kbnn.py). If None, serve baseline pi05.
     kbnn_checkpoint: str | None = "kbnn_checkpoint.pt"
 
@@ -99,10 +105,22 @@ def main(args: Args) -> None:
         raise FileNotFoundError(f"Expected {checkpoint_dir}/model.safetensors (convert the checkpoint to PyTorch first).")
 
     train_config = _config.get_config(args.policy.config)
+
+    # Load norm stats:
+    # The converted PyTorch checkpoint directory may not include `assets/`, so allow pointing to the
+    # original step checkpoint's assets dir (or any compatible assets dir).
+    norm_stats = None
+    if args.norm_stats_assets_dir is not None:
+        data_config = train_config.data.create(train_config.assets_dirs, train_config.model)
+        if data_config.asset_id is None:
+            raise ValueError("Train config has no asset_id; cannot load norm stats.")
+        norm_stats = _checkpoints.load_norm_stats(Path(args.norm_stats_assets_dir), data_config.asset_id)
+
     policy = _policy_config.create_trained_policy(
         train_config,
         str(checkpoint_dir),
         default_prompt=args.default_prompt,
+        norm_stats=norm_stats,
         pytorch_device=args.pytorch_device,
     )
 
@@ -146,4 +164,3 @@ def main(args: Args) -> None:
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, force=True)
     main(tyro.cli(Args))
-
