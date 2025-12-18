@@ -84,7 +84,7 @@ class Args:
     # Example: `/media/data-ssd-2/qiaoan_ckpt/pi05_29999/assets`
     norm_stats_assets_dir: str | None = None
 
-    # KBNN checkpoint (from scripts/train_kbnn.py). If None, serve baseline pi05.
+    # KBNN checkpoint (recommended: output of scripts/train_kbnn_diffusion.py). If None, serve baseline pi05.
     kbnn_checkpoint: str | None = "kbnn_checkpoint.pt"
 
     # Disable KBNN even if `kbnn_checkpoint` is provided.
