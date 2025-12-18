@@ -167,6 +167,12 @@ class PaliGemmaWithExpertModel(nn.Module):
                     hidden_states, gate = layer.input_layernorm(hidden_states, cond=adarms_cond[i])  # noqa: PLW2901
                     gates.append(gate)
 
+                    # Some layernorm implementations upcast to fp32 for stability.
+                    # Ensure q/k/v projections see the same dtype as their weights (pi05 checkpoints often use bf16).
+                    proj_dtype = layer.self_attn.q_proj.weight.dtype
+                    if hidden_states.dtype != proj_dtype:
+                        hidden_states = hidden_states.to(dtype=proj_dtype)
+
                     input_shape = hidden_states.shape[:-1]
                     hidden_shape = (*input_shape, -1, layer.self_attn.head_dim)
                     query_state = layer.self_attn.q_proj(hidden_states).view(hidden_shape).transpose(1, 2)
