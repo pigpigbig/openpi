@@ -1,13 +1,23 @@
-from typing import Dict, Any
+from typing import Literal
 import torch
 import math
 import numpy as np
 
 class KBNN:
-    def __init__(self, network_geometry, init_scale=0.1, init_cov=0.01, dtype=torch.float32, device='cpu'):
+    def __init__(
+        self,
+        network_geometry,
+        init_scale=0.1,
+        init_cov=0.01,
+        dtype=torch.float32,
+        device="cpu",
+        *,
+        cov_mode: Literal["full", "diag"] = "full",
+    ):
         self.network_geometry = list(network_geometry)
         self.device = device
         self.dtype = dtype
+        self.cov_mode = cov_mode
 
         # initialize mean and covariance of weights
         self.mws = []
@@ -16,7 +26,11 @@ class KBNN:
             m = self.network_geometry[l + 1]
             n = self.network_geometry[l]
             mw = torch.tensor(np.random.randn(m, n + 1) * init_scale, dtype=self.dtype, device=self.device)
-            sw = torch.tensor(np.eye(m * (n + 1)) * init_cov, dtype=self.dtype, device=self.device)
+            if self.cov_mode == "full":
+                sw = torch.tensor(np.eye(m * (n + 1)) * init_cov, dtype=self.dtype, device=self.device)
+            else:
+                # Diagonal covariance over vec(W) (column-major order), stored as a vector.
+                sw = torch.full((m * (n + 1),), float(init_cov), dtype=self.dtype, device=self.device)
             self.mws.append(mw)
             self.sws.append(sw)
 
@@ -30,6 +44,8 @@ class KBNN:
         x: 1D tensor of shape (d,) where d == network_geometry[0]
         Returns: cache (dict) for this sample
         """
+        if self.cov_mode != "full":
+            raise NotImplementedError("KBNN.forward (moment propagation) requires cov_mode='full'. Use forward_deterministic.")
         # ensure 1D tensor
         if x.ndim != 1:
             x = x.view(-1)
@@ -93,6 +109,8 @@ class KBNN:
         y: scalar tensor (or 0-d/1-d tensor with shape (out_dim,)) corresponding to the sample target.
         Updates self.mws and self.sws in-place.
         """
+        if self.cov_mode != "full":
+            raise NotImplementedError("KBNN.backward (Bayesian update) requires cov_mode='full'. Use autograd on forward_deterministic.")
         assert self.forward_cache is not None, "Call forward(x) for a single sample before backward(y)."
 
         cache = self.forward_cache
@@ -139,6 +157,28 @@ class KBNN:
 
         # clear cache after update (so forward must be called again per new sample/state)
         self.forward_cache = None
+
+    def forward_deterministic(self, x: torch.Tensor) -> torch.Tensor:
+        """Standard deterministic MLP forward using mean weights (mws).
+
+        This bypasses covariance/moment propagation entirely and is intended for
+        diagonal/approximate training where full covariance is infeasible.
+
+        Args:
+            x: Tensor [..., d] where d == network_geometry[0]
+        Returns:
+            y: Tensor [..., out_dim] where out_dim == network_geometry[-1]
+        """
+        if x.ndim == 1:
+            x = x[None, :]
+        h = x.to(dtype=self.dtype, device=self.device)
+        for layer_idx, mw in enumerate(self.mws):
+            one = torch.ones(h.shape[0], 1, dtype=h.dtype, device=h.device)
+            h_aug = torch.cat([h, one], dim=1)  # [..., n+1]
+            h = h_aug @ mw.T  # [..., m]
+            if layer_idx != len(self.mws) - 1:
+                h = torch.relu(h)
+        return h
 
     @staticmethod
     def gaussian_pushforward_linear_random_matrix(
