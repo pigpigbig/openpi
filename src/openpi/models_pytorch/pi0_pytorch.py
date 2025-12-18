@@ -153,6 +153,7 @@ class PI0Pytorch(nn.Module):
             feats: torch.Tensor [B*T, action_expert_width] from the last action token.
         """
         device = self.action_out_proj.weight.device
+        model_dtype = self.action_out_proj.weight.dtype
         imgs = torch.as_tensor(images, device=device)
         wrists = torch.as_tensor(wrist_images, device=device)
         st = torch.as_tensor(states, device=device, dtype=torch.float32)
@@ -183,11 +184,18 @@ class PI0Pytorch(nn.Module):
         timestep = torch.ones(B * T, device=device)
         suffix_embs, suffix_pad_masks, suffix_att_masks, adarms_cond = self.embed_suffix(st, noisy_actions, timestep)
 
+        # Ensure embeds match model parameter dtype (pi05 checkpoints commonly use bfloat16).
+        prefix_embs = prefix_embs.to(dtype=model_dtype)
+        suffix_embs = suffix_embs.to(dtype=model_dtype)
+        if adarms_cond is not None:
+            adarms_cond = adarms_cond.to(dtype=model_dtype)
+
         pad_masks = torch.cat([prefix_pad_masks, suffix_pad_masks], dim=1)
         att_masks = torch.cat([prefix_att_masks, suffix_att_masks], dim=1)
         att_2d_masks = make_att_2d_masks(pad_masks, att_masks)
         position_ids = torch.cumsum(pad_masks, dim=1) - 1
         att_2d_masks_4d = self._prepare_attention_masks_4d(att_2d_masks)
+        att_2d_masks_4d = att_2d_masks_4d.to(dtype=model_dtype)
 
         def forward_func(prefix_embs, suffix_embs, att_2d_masks_4d, position_ids, adarms_cond):
             (_, suffix_out), _ = self.paligemma_with_expert.forward(
@@ -204,7 +212,7 @@ class PI0Pytorch(nn.Module):
             forward_func, prefix_embs, suffix_embs, att_2d_masks_4d, position_ids, adarms_cond
         )
         suffix_out = suffix_out[:, -self.config.action_horizon :]  # (B*T, H, width)
-        return suffix_out[:, -1, :]
+        return suffix_out[:, -1, :].float()
 
     def is_gradient_checkpointing_enabled(self):
         """Check if gradient checkpointing is enabled."""
