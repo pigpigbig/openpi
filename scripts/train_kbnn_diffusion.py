@@ -197,12 +197,27 @@ def main() -> None:
 
             # Apply the same transforms used by the policy server (parse/normalize/tokenize).
             inputs = policy._input_transform(obs)  # noqa: SLF001
-            inputs = {k: np.asarray(v) for k, v in inputs.items()}
+
+            # Keep only model-consumed keys. The raw "prompt" (string) can be present in intermediate
+            # transform stages and would break numpy->torch conversion.
+            allowed = {
+                "state",
+                "image",
+                "image_mask",
+                "tokenized_prompt",
+                "tokenized_prompt_mask",
+                "token_ar_mask",
+                "token_loss_mask",
+            }
+            inputs = {k: v for k, v in inputs.items() if k in allowed}
+
+            # Convert leaves to numpy arrays without collapsing nested dicts (e.g., image dict).
+            import jax  # local import to keep module import time down
+
+            inputs = jax.tree.map(lambda x: np.asarray(x), inputs)
 
             # Policy.infer would add batch dim and convert to torch; replicate that for training.
-            inputs_t = torch.utils._pytree.tree_map(  # type: ignore[attr-defined]
-                lambda x: torch.from_numpy(np.array(x)).to(device)[None, ...], inputs
-            )
+            inputs_t = jax.tree.map(lambda x: torch.from_numpy(np.array(x)).to(device)[None, ...], inputs)
             from openpi.models import model as _model  # local import to avoid circulars
 
             observation = _model.Observation.from_dict(inputs_t)
@@ -242,4 +257,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
