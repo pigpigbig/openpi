@@ -250,6 +250,7 @@ def eval_libero(args: Args) -> None:
 
     # Start evaluation
     total_episodes, total_successes = 0, 0
+    env_success_rates = {}
     for task_id in tqdm.tqdm(range(num_tasks_in_suite)):
         # Get task
         task = task_suite.get_task(task_id)
@@ -379,9 +380,13 @@ def eval_libero(args: Args) -> None:
         logging.info(
             f"Current total success rate: {float(total_successes) / float(total_episodes)}"
         )
+        env_success_rates[task_id] = float(task_successes) / float(task_episodes)
 
     logging.info(f"Total success rate: {float(total_successes) / float(total_episodes)}")
     logging.info(f"Total episodes: {total_episodes}")
+    logging.info("[camshift] Per-env success rates:")
+    for env_id in sorted(env_success_rates):
+        logging.info(f"[camshift] Env {env_id} success rate: {env_success_rates[env_id]:.3f}")
 
 
 def _get_libero_env(
