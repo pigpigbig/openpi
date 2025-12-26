@@ -121,6 +121,11 @@ def main() -> None:
     ap.add_argument("--steps-per-epoch", type=int, default=2000, help="Random samples per epoch")
     ap.add_argument("--lr", type=float, default=1e-4)
     ap.add_argument(
+        "--use-each-episode-once",
+        action="store_true",
+        help="If set, each epoch will use each episode file once (one random timestep per episode).",
+    )
+    ap.add_argument(
         "--init-from",
         default=None,
         help="Optional KBNN checkpoint to initialize from (e.g. kbnn_checkpoint_noop.pt).",
@@ -183,8 +188,9 @@ def main() -> None:
     files = _load_episode_files(args.data_root)
     horizon = int(getattr(train_config.model, "action_horizon", 10))
 
-    def sample_training_point():
-        ep_path = random.choice(files)
+    def sample_training_point(ep_path: str | None = None):
+        if ep_path is None:
+            ep_path = random.choice(files)
         with np.load(ep_path) as data:
             camshift_images = data["camshift_images"]  # (T,224,224,3)
             wrist_images = data["wrist_images"]
@@ -206,8 +212,17 @@ def main() -> None:
 
     for epoch in range(args.epochs):
         running = 0.0
-        for step in range(args.steps_per_epoch):
-            obs, act_chunk = sample_training_point()
+        if args.use_each_episode_once:
+            epoch_files = files[:]
+            random.shuffle(epoch_files)
+            steps = len(epoch_files)
+            sample_iter = (sample_training_point(ep_path) for ep_path in epoch_files)
+        else:
+            steps = args.steps_per_epoch
+            sample_iter = (sample_training_point() for _ in range(steps))
+
+        for step in range(steps):
+            obs, act_chunk = next(sample_iter)
 
             # Apply the same transforms used by the policy server (parse/normalize/tokenize).
             inputs = policy._input_transform(obs)  # noqa: SLF001
@@ -253,7 +268,7 @@ def main() -> None:
 
             running += float(loss.detach().cpu())
             if (step + 1) % 100 == 0:
-                print(f"epoch {epoch+1}/{args.epochs} step {step+1}/{args.steps_per_epoch} loss={running/100:.6f}")
+                print(f"epoch {epoch+1}/{args.epochs} step {step+1}/{steps} loss={running/100:.6f}")
                 running = 0.0
 
     # Save just the KBNN head weights in the same format expected by serve_kbnn_policy.py.
