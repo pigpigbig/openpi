@@ -36,7 +36,7 @@ class Args:
         "libero_spatial"  # Task suite. Options: libero_spatial, libero_object, libero_goal, libero_10, libero_90
     )
     num_steps_wait: int = 10  # Number of steps to wait for objects to stabilize in sim
-    num_trials_per_task: int = 1  # Number of rollouts per task
+    num_trials_per_task: int = 20  # Number of rollouts per task
 
     # Camera perturbation: offsets for the "agentview" camera
     camera_pitch_deg: float = 0.0  # tilt toward the table (positive tilts up less steeply)
