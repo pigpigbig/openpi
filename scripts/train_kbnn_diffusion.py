@@ -119,6 +119,11 @@ def main() -> None:
     ap.add_argument("--epochs", type=int, default=1)
     ap.add_argument("--steps-per-epoch", type=int, default=2000, help="Random samples per epoch")
     ap.add_argument("--lr", type=float, default=1e-4)
+    ap.add_argument(
+        "--init-from",
+        default=None,
+        help="Optional KBNN checkpoint to initialize from (e.g. kbnn_checkpoint_noop.pt).",
+    )
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--device", default="cuda")
     ap.add_argument("--output", default="kbnn_checkpoint.pt")
@@ -146,12 +151,20 @@ def main() -> None:
     model = policy._model  # noqa: SLF001
     model.eval()
 
-    # Initialize KBNN weights from the original linear projection weights.
+    # Initialize KBNN weights.
     geom_with_bias = [int(x) for x in args.geometry.split(",")]
-    w = np.load(str(Path(args.kbnn_weights) / "action_out_proj_weight.npy"))  # (1024, 32)
-    b = np.load(str(Path(args.kbnn_weights) / "action_out_proj_bias.npy"))  # (32,)
-    w_with_bias = torch.tensor(np.vstack([w, b[None, :]]), dtype=torch.float32)
-    init_mws = initialize_weights(w_with_bias, geom_with_bias)
+    if args.init_from:
+        ckpt = torch.load(args.init_from, map_location="cpu")
+        if "mws" not in ckpt:
+            raise ValueError(f"{args.init_from} missing 'mws' list.")
+        init_mws = [w.to(dtype=torch.float32) for w in ckpt["mws"]]
+        logging.info("[kbnn] init from %s", args.init_from)
+    else:
+        w = np.load(str(Path(args.kbnn_weights) / "action_out_proj_weight.npy"))  # (1024, 32)
+        b = np.load(str(Path(args.kbnn_weights) / "action_out_proj_bias.npy"))  # (32,)
+        w_with_bias = torch.tensor(np.vstack([w, b[None, :]]), dtype=torch.float32)
+        init_mws = initialize_weights(w_with_bias, geom_with_bias)
+        logging.info("[kbnn] init from linear projection weights")
 
     kbnn_head = KBNNActionHead([mw.to(device) for mw in init_mws]).to(device)
     if not hasattr(model, "action_out_proj"):
