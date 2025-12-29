@@ -352,19 +352,20 @@ def eval_libero(args: Args) -> None:
             total_episodes += 1
 
             # Save a replay video of the episode every N episodes
-            if replay_images and (episode_idx % args.save_video_every == 0):
-                suffix = "success" if done else "failure"
-                task_segment = task_description.replace(" ", "_")
-                out_path = (
-                    pathlib.Path(args.video_out_path)
-                    / f"rollout_{task_segment}_ep{episode_idx:03d}_{suffix}.mp4"
-                )
-                imageio.mimwrite(
-                    out_path,
-                    [np.asarray(x) for x in replay_images],
-                    fps=10,
-                )
-                logging.info(f"[camshift] Saved video: {out_path}")
+            # Video saving disabled for faster iteration.
+            # if replay_images and (episode_idx % args.save_video_every == 0):
+            #     suffix = "success" if done else "failure"
+            #     task_segment = task_description.replace(" ", "_")
+            #     out_path = (
+            #         pathlib.Path(args.video_out_path)
+            #         / f"rollout_{task_segment}_ep{episode_idx:03d}_{suffix}.mp4"
+            #     )
+            #     imageio.mimwrite(
+            #         out_path,
+            #         [np.asarray(x) for x in replay_images],
+            #         fps=10,
+            #     )
+            #     logging.info(f"[camshift] Saved video: {out_path}")
 
             # Log current results
             logging.info(f"Success: {done}")
