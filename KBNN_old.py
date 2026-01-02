@@ -23,7 +23,20 @@ class KBNN():
     This class implements a Bayesian neural network where the weights are updated
     using a Kalman filter-like approach.
     """
-    def __init__(self, layers, act_fun, input_scaler=None, output_scaler=None, verbose=True, noise=0.01, normalise=False, no_bias=False, weight_prior = None, device=None):
+    def __init__(
+        self,
+        layers,
+        act_fun,
+        input_scaler=None,
+        output_scaler=None,
+        verbose=True,
+        noise=0.01,
+        normalise=False,
+        no_bias=False,
+        weight_prior=None,
+        device=None,
+        cov_mode="full",
+    ):
         # Initialize network parameters.
         self.act_fun = act_fun
         self.layers = layers
@@ -34,6 +47,7 @@ class KBNN():
         self.input_scaler = input_scaler
         self.output_scaler = output_scaler
         self.no_bias = no_bias
+        self.cov_mode = cov_mode
 
         # --- FIX: Set device for all tensors in this class ---
         if device is None:
@@ -72,9 +86,13 @@ class KBNN():
             if not self.no_bias:
                 mw[i][-1] = torch.zeros(no, device=self.device)
 
-            Cw[i] = torch.zeros((no, ni, ni), device=self.device)
-            for j in range(no):
-                Cw[i][j] = torch.diag(torch.ones(ni, device=self.device))
+            if self.cov_mode == "full":
+                Cw[i] = torch.zeros((no, ni, ni), device=self.device)
+                for j in range(no):
+                    Cw[i][j] = torch.diag(torch.ones(ni, device=self.device))
+            else:
+                # Diagonal-only covariance per output unit (no, ni)
+                Cw[i] = torch.ones((no, ni), device=self.device)
 
         return mw, Cw
     
@@ -110,11 +128,17 @@ class KBNN():
 
             ma[i] = mz_.mm(self.mw[i])
 
-            A = torch.matmul(torch.t(self.mw[i]), torch.matmul(Cz_, self.mw[i]))
-            A_diag = torch.diagonal(A, dim1=1, dim2=2)
-
-            C = torch.diagonal(Cz_, dim1=-2, dim2=-1).mm(torch.t(torch.diagonal(self.Cw[i], dim1=2)))
-            B = torch.einsum('nmi,ni->nm', torch.einsum('mij,nj->nmi', self.Cw[i], mz_), mz_)
+            if self.cov_mode == "full":
+                A = torch.matmul(torch.t(self.mw[i]), torch.matmul(Cz_, self.mw[i]))
+                A_diag = torch.diagonal(A, dim1=1, dim2=2)
+                C = torch.diagonal(Cz_, dim1=-2, dim2=-1).mm(torch.t(torch.diagonal(self.Cw[i], dim1=2)))
+                B = torch.einsum('nmi,ni->nm', torch.einsum('mij,nj->nmi', self.Cw[i], mz_), mz_)
+            else:
+                # Diagonal approximation: only keep variances per weight.
+                Cz_diag = torch.diagonal(Cz_, dim1=-2, dim2=-1)
+                A_diag = Cz_diag.mm(self.mw[i] ** 2)
+                C = Cz_diag.mm(self.Cw[i].t())
+                B = (mz_ ** 2).mm(self.Cw[i].t())
 
             Ca[i] = A_diag + B + C
 
@@ -207,8 +231,12 @@ class KBNN():
                 da = k * (my_new - my[i])
                 Da = (k ** 2) * (Cy_new - Cy[i])
 
-                Cwa = self.Cw[i] @ mz_
-                Cza = torch.diag(Cz) @ self.mw[i]
+                if self.cov_mode == "full":
+                    Cwa = self.Cw[i] @ mz_
+                    Cza = torch.diag(Cz) @ self.mw[i]
+                else:
+                    Cwa = self.Cw[i] * mz_.unsqueeze(0)
+                    Cza = Cz.unsqueeze(1) * self.mw[i]
 
                 Ca_inv = 1 / (Ca[i] + 1e-9)
 
@@ -219,7 +247,10 @@ class KBNN():
 
                 E = L_up * torch.outer(Da, torch.ones((ni), device=self.device))
                 F = L_up.unsqueeze(-1) @ torch.ones((1, ni), device=self.device)
-                self.Cw[i] = self.Cw[i] + E.unsqueeze(1).repeat(1, ni, 1) * F
+                if self.cov_mode == "full":
+                    self.Cw[i] = self.Cw[i] + E.unsqueeze(1).repeat(1, ni, 1) * F
+                else:
+                    self.Cw[i] = self.Cw[i] + (L_up ** 2) * Da.unsqueeze(1)
 
                 if self.no_bias:
                     my_new = mz + L_low @ da
