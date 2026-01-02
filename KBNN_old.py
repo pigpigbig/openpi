@@ -249,11 +249,12 @@ class KBNN():
 
                 self.mw[i] = self.mw[i] + torch.t(L_up * torch.outer(da, torch.ones((ni), device=self.device)))
 
-                E = L_up * torch.outer(Da, torch.ones((ni), device=self.device))
-                F = L_up.unsqueeze(-1) @ torch.ones((1, ni), device=self.device)
                 if self.cov_mode == "full":
+                    E = L_up * torch.outer(Da, torch.ones((ni), device=self.device))
+                    F = L_up.unsqueeze(-1) @ torch.ones((1, ni), device=self.device)
                     self.Cw[i] = self.Cw[i] + E.unsqueeze(1).repeat(1, ni, 1) * F
                 else:
+                    # Diagonal-only covariance update; avoid large outer products.
                     self.Cw[i] = self.Cw[i] + (L_up ** 2) * Da.unsqueeze(1)
 
                 if self.no_bias:
