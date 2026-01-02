@@ -109,6 +109,12 @@ def main() -> None:
     ap.add_argument("--epochs", type=int, default=1)
     ap.add_argument("--steps-per-epoch", type=int, default=2000, help="Random samples per epoch")
     ap.add_argument("--lr", type=float, default=1e-4)
+    ap.add_argument(
+        "--kbnn-cov-mode",
+        choices=["full", "diag"],
+        default="diag",
+        help="KBNN covariance mode; use 'diag' to avoid OOM on large geometries.",
+    )
     ap.add_argument("--save-every", type=int, default=500, help="Save a KBNN checkpoint every N steps")
     ap.add_argument(
         "--use-each-episode-once",
@@ -173,6 +179,7 @@ def main() -> None:
         noise=0.0,
         verbose=False,
         device=torch.device(device),
+        cov_mode=args.kbnn_cov_mode,
     )
     if not hasattr(model, "action_out_proj"):
         raise AttributeError("Loaded torch model has no action_out_proj")
