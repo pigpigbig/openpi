@@ -236,7 +236,11 @@ class KBNN():
                     Cza = torch.diag(Cz) @ self.mw[i]
                 else:
                     Cwa = self.Cw[i] * mz_.unsqueeze(0)
-                    Cza = Cz.unsqueeze(1) * self.mw[i]
+                    if self.no_bias:
+                        Cz_aug = Cz
+                    else:
+                        Cz_aug = torch.cat((Cz, torch.zeros(1, device=self.device)), 0)
+                    Cza = Cz_aug.unsqueeze(1) * self.mw[i]
 
                 Ca_inv = 1 / (Ca[i] + 1e-9)
 
