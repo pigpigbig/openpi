@@ -59,31 +59,20 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from weight_initialization import initialize_weights  # noqa: E402
+from KBNN_old import KBNN as KBNNOld  # noqa: E402
 
 from openpi.policies import policy_config as _policy_config  # noqa: E402
 from openpi.training import checkpoints as _checkpoints  # noqa: E402
 from openpi.training import config as _config  # noqa: E402
 
 
-class KBNNActionHead(torch.nn.Module):
-    """KBNN MLP head: (width=1024) -> (32). Uses weights with explicit bias columns."""
+class _HeadInputCatcher:
+    def __init__(self):
+        self.last_in = None
 
-    def __init__(self, mws: list[torch.Tensor]):
-        super().__init__()
-        self.mws = torch.nn.ParameterList([torch.nn.Parameter(w.clone().detach()) for w in mws])
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # x: (B, H, D)
-        if x.ndim != 3:
-            raise ValueError(f"Expected (B,H,D) got {tuple(x.shape)}")
-        b, h, d = x.shape
-        hidden = x.reshape(b * h, d).to(dtype=torch.float32)
-        for i, mw in enumerate(self.mws):
-            ones = torch.ones(hidden.shape[0], 1, dtype=hidden.dtype, device=hidden.device)
-            hidden = torch.cat([hidden, ones], dim=1) @ mw.T
-            if i != len(self.mws) - 1:
-                hidden = torch.relu(hidden)
-        return hidden.reshape(b, h, -1)
+    def __call__(self, _module, inputs):
+        # inputs is a tuple; first entry is tensor [B,H,D]
+        self.last_in = inputs[0].detach()
 
 
 def _load_episode_files(data_root: str) -> list[str]:
@@ -159,31 +148,37 @@ def main() -> None:
 
     # Initialize KBNN weights.
     geom_with_bias = [int(x) for x in args.geometry.split(",")]
+    if len(geom_with_bias) < 2 or geom_with_bias[0] < 2:
+        raise ValueError(f"Invalid --geometry {geom_with_bias}")
+    geom_no_bias = [geom_with_bias[0] - 1, *geom_with_bias[1:]]
     if args.init_from:
         ckpt = torch.load(args.init_from, map_location="cpu")
         if "mws" not in ckpt:
             raise ValueError(f"{args.init_from} missing 'mws' list.")
-        init_mws = [w.to(dtype=torch.float32) for w in ckpt["mws"]]
+        init_mws = [w.to(dtype=torch.float32).T for w in ckpt["mws"]]
         logging.info("[kbnn] init from %s", args.init_from)
     else:
         w = np.load(str(Path(args.kbnn_weights) / "action_out_proj_weight.npy"))  # (1024, 32)
         b = np.load(str(Path(args.kbnn_weights) / "action_out_proj_bias.npy"))  # (32,)
         w_with_bias = torch.tensor(np.vstack([w, b[None, :]]), dtype=torch.float32)
-        init_mws = initialize_weights(w_with_bias, geom_with_bias)
+        init_mws = [mw.T for mw in initialize_weights(w_with_bias, geom_with_bias)]
         logging.info("[kbnn] init from linear projection weights")
 
-    kbnn_head = KBNNActionHead([mw.to(device) for mw in init_mws]).to(device)
+    kbnn = KBNNOld(
+        geom_no_bias,
+        act_fun=["relu", "relu", "linear"],
+        weight_prior=[mw.to(device=device) for mw in init_mws],
+        no_bias=False,
+        noise=0.0,
+        verbose=False,
+        device=torch.device(device),
+    )
     if not hasattr(model, "action_out_proj"):
         raise AttributeError("Loaded torch model has no action_out_proj")
-    model.action_out_proj = kbnn_head
-
-    # Freeze everything except the KBNN head.
-    for p in model.parameters():
-        p.requires_grad_(False)
-    for p in kbnn_head.parameters():
-        p.requires_grad_(True)
-
-    opt = torch.optim.AdamW(kbnn_head.parameters(), lr=args.lr)
+    catcher = _HeadInputCatcher()
+    hook_handle = model.action_out_proj.register_forward_pre_hook(catcher)
+    if args.lr != 0.0:
+        logging.info("[kbnn] lr=%s (unused; KBNN uses Kalman update)", args.lr)
 
     files = _load_episode_files(args.data_root)
     horizon = int(getattr(train_config.model, "action_horizon", 10))
@@ -259,25 +254,31 @@ def main() -> None:
             # Use a fixed random time per sample (in [0,1]); keep float32.
             time = torch.rand((1,), device=device, dtype=torch.float32) * 0.999 + 0.001
 
-            loss_map = model(observation, actions_t, noise=noise, time=time)  # (1,H,32) loss per-dim
-            loss = loss_map[..., :7].mean()
+            with torch.no_grad():
+                _ = model(observation, actions_t, noise=noise, time=time)
+            if catcher.last_in is None:
+                raise RuntimeError("Failed to capture action_out_proj input.")
 
-            opt.zero_grad(set_to_none=True)
-            loss.backward()
-            opt.step()
+            x = catcher.last_in.squeeze(0).to(dtype=torch.float32, device=kbnn.device)
+            y = (noise - actions_t).squeeze(0).to(dtype=torch.float32, device=kbnn.device)
+            kbnn.train(x, y)
 
+            pred, _, _, _ = kbnn.single_forward_pass(x, training=False)
+            loss = torch.mean((pred - y) ** 2)
             running += float(loss.detach().cpu())
             if (step + 1) % 100 == 0:
                 print(f"epoch {epoch+1}/{args.epochs} step {step+1}/{steps} loss={running/100:.6f}")
                 running = 0.0
 
+    hook_handle.remove()
+
     # Save just the KBNN head weights in the same format expected by serve_kbnn_policy.py.
     torch.save(
         {
             "geometry_with_bias": geom_with_bias,
-            "kbnn_geometry": [geom_with_bias[0] - 1, *geom_with_bias[1:]],
-            "cov_mode": "diag",
-            "mws": [p.detach().cpu() for p in kbnn_head.mws],
+            "kbnn_geometry": geom_no_bias,
+            "cov_mode": "full",
+            "mws": [w.detach().cpu().T for w in kbnn.mw],
         },
         args.output,
     )
