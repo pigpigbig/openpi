@@ -109,7 +109,6 @@ def main() -> None:
     ap.add_argument("--epochs", type=int, default=1)
     ap.add_argument("--steps-per-epoch", type=int, default=2000, help="Random samples per epoch")
     ap.add_argument("--lr", type=float, default=1e-4)
-    ap.add_argument("--save-every", type=int, default=500, help="Save a KBNN checkpoint every N steps")
     ap.add_argument(
         "--use-each-episode-once",
         action="store_true",
@@ -206,18 +205,6 @@ def main() -> None:
         act_chunk = _make_action_chunk(actions32, t, horizon)  # (H,32)
         return obs, act_chunk
 
-    def _save_kbnn(path: str) -> None:
-        torch.save(
-            {
-                "geometry_with_bias": geom_with_bias,
-                "kbnn_geometry": geom_no_bias,
-                "cov_mode": "full",
-                "mws": [w.detach().cpu().T for w in kbnn.mw],
-            },
-            path,
-        )
-
-    global_step = 0
     for epoch in range(args.epochs):
         running = 0.0
         if args.use_each_episode_once:
@@ -279,19 +266,22 @@ def main() -> None:
             pred, _, _, _ = kbnn.single_forward_pass(x, training=False)
             loss = torch.mean((pred - y) ** 2)
             running += float(loss.detach().cpu())
-            global_step += 1
             if (step + 1) % 100 == 0:
                 print(f"epoch {epoch+1}/{args.epochs} step {step+1}/{steps} loss={running/100:.6f}")
                 running = 0.0
-            if args.save_every > 0 and global_step % args.save_every == 0:
-                save_path = f"{Path(args.output).with_suffix('')}_step{global_step}.pt"
-                _save_kbnn(save_path)
-                print(f"Saved {save_path}")
 
     hook_handle.remove()
 
     # Save just the KBNN head weights in the same format expected by serve_kbnn_policy.py.
-    _save_kbnn(args.output)
+    torch.save(
+        {
+            "geometry_with_bias": geom_with_bias,
+            "kbnn_geometry": geom_no_bias,
+            "cov_mode": "full",
+            "mws": [w.detach().cpu().T for w in kbnn.mw],
+        },
+        args.output,
+    )
     print(f"Saved {args.output}")
 
 
