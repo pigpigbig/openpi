@@ -75,8 +75,13 @@ class _HeadInputCatcher:
         self.last_in = inputs[0].detach()
 
 
-def _load_episode_files(data_root: str) -> list[str]:
-    files = sorted(glob.glob(os.path.join(data_root, "env_*", "ep_*.npz")))
+def _load_episode_files(data_root: str, env_ids: list[int] | None = None) -> list[str]:
+    if env_ids:
+        files = []
+        for env_id in env_ids:
+            files.extend(sorted(glob.glob(os.path.join(data_root, f"env_{env_id:02d}", "ep_*.npz"))))
+    else:
+        files = sorted(glob.glob(os.path.join(data_root, "env_*", "ep_*.npz")))
     if not files:
         raise ValueError(f"No episode npz files found under {data_root}")
     return files
@@ -106,6 +111,13 @@ def main() -> None:
     ap.add_argument("--data-root", default="data/libero/kbnn_dataset", help="Collected dataset root")
     ap.add_argument("--kbnn-weights", default="kbnn_weights", help="Dir with action_out_proj_weight.npy and bias.npy")
     ap.add_argument("--geometry", default="1025,2050,2050,32", help="KBNN geometry for initialization (includes bias)")
+    ap.add_argument(
+        "--env-ids",
+        type=int,
+        nargs="*",
+        default=None,
+        help="Optional env ids to train on (e.g. --env-ids 0 1).",
+    )
     ap.add_argument("--epochs", type=int, default=1)
     ap.add_argument("--steps-per-epoch", type=int, default=2000, help="Random samples per epoch")
     ap.add_argument("--lr", type=float, default=1e-4)
@@ -164,7 +176,7 @@ def main() -> None:
     catcher = _HeadInputCatcher()
     hook_handle = model.action_out_proj.register_forward_pre_hook(catcher)
 
-    files = _load_episode_files(args.data_root)
+    files = _load_episode_files(args.data_root, args.env_ids)
     horizon = int(getattr(train_config.model, "action_horizon", 10))
 
     def sample_training_point(ep_path: str | None = None):
