@@ -127,12 +127,6 @@ def main() -> None:
         default=0,
         help="Samples to estimate feature mean/std (0 = one sample per episode if --use-each-episode-once, else steps-per-epoch).",
     )
-    ap.add_argument(
-        "--kbnn-cov-mode",
-        choices=["full", "diag"],
-        default="diag",
-        help="KBNN covariance mode; use 'diag' to avoid OOM on large geometries.",
-    )
     ap.add_argument("--save-every", type=int, default=500, help="Save a KBNN checkpoint every N steps")
     ap.add_argument(
         "--use-each-episode-once",
@@ -284,6 +278,11 @@ def main() -> None:
             float(feature_mean.abs().mean()),
             float(feature_std.mean()),
         )
+        logging.info(
+            "[kbnn] feature_mean[:5]=%s feature_std[:5]=%s",
+            feature_mean[:5].tolist(),
+            feature_std[:5].tolist(),
+        )
 
     # Initialize KBNN weights with feature-normalized correction.
     geom_with_bias = [int(x) for x in args.geometry.split(",")]
@@ -315,7 +314,6 @@ def main() -> None:
         noise=0.0,
         verbose=False,
         device=torch.device(device),
-        cov_mode=args.kbnn_cov_mode,
     )
     if args.lr != 0.0:
         logging.info("[kbnn] lr=%s (unused; KBNN uses Kalman update)", args.lr)
