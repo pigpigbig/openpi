@@ -20,9 +20,15 @@ class KBNNActionHead(torch.nn.Module):
     i.e. a list of layer mean weights `mws`, each shaped (out_dim, in_dim+1) including bias.
     """
 
-    def __init__(self, mws: list[torch.Tensor]):
+    def __init__(self, mws: list[torch.Tensor], feature_mean: torch.Tensor | None = None, feature_std: torch.Tensor | None = None):
         super().__init__()
         self.mws = torch.nn.ParameterList([torch.nn.Parameter(w.clone().detach()) for w in mws])
+        if feature_mean is not None and feature_std is not None:
+            self.register_buffer("feature_mean", feature_mean.clone().detach())
+            self.register_buffer("feature_std", feature_std.clone().detach())
+        else:
+            self.feature_mean = None
+            self.feature_std = None
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # x: (B, H, D) or (N, D)
@@ -36,6 +42,8 @@ class KBNNActionHead(torch.nn.Module):
             raise ValueError(f"Expected 2D or 3D tensor, got shape={orig_shape}")
 
         hidden = x.to(dtype=torch.float32)
+        if self.feature_mean is not None and self.feature_std is not None:
+            hidden = (hidden - self.feature_mean) / self.feature_std
         for layer_idx, mw in enumerate(self.mws):
             ones = torch.ones(hidden.shape[0], 1, dtype=hidden.dtype, device=hidden.device)
             hidden_aug = torch.cat([hidden, ones], dim=1)  # (N, in+1)
@@ -48,12 +56,20 @@ class KBNNActionHead(torch.nn.Module):
         return hidden
 
 
-def _load_kbnn_mws(kbnn_checkpoint: str, device: str) -> list[torch.Tensor]:
+def _load_kbnn_mws(kbnn_checkpoint: str, device: str):
     ckpt = torch.load(kbnn_checkpoint, map_location="cpu")
     if "mws" not in ckpt:
         raise ValueError(f"{kbnn_checkpoint} missing 'mws' (expected output of scripts/train_kbnn.py)")
     mws = [w.to(dtype=torch.float32, device=device) for w in ckpt["mws"]]
-    return mws
+    feature_mean = ckpt.get("feature_mean")
+    feature_std = ckpt.get("feature_std")
+    if feature_mean is not None and feature_std is not None:
+        feature_mean = feature_mean.to(dtype=torch.float32, device=device)
+        feature_std = feature_std.to(dtype=torch.float32, device=device)
+    else:
+        feature_mean = None
+        feature_std = None
+    return mws, feature_mean, feature_std
 
 
 @dataclasses.dataclass
@@ -84,7 +100,7 @@ class Args:
     # Example: `/media/data-ssd-2/qiaoan_ckpt/pi05_29999/assets`
     norm_stats_assets_dir: str | None = None
 
-    # KBNN checkpoint (recommended: output of scripts/train_kbnn_diffusion.py). If None, serve baseline pi05.
+    # KBNN checkpoint (recommended: output of scripts/train_kbnn.py). If None, serve baseline pi05.
     kbnn_checkpoint: str | None = "kbnn_checkpoint.pt"
 
     # Disable KBNN even if `kbnn_checkpoint` is provided.
@@ -128,8 +144,8 @@ def main(args: Args) -> None:
     use_kbnn = (not args.disable_kbnn) and (args.kbnn_checkpoint is not None)
     if use_kbnn:
         device = policy._pytorch_device  # noqa: SLF001
-        mws = _load_kbnn_mws(args.kbnn_checkpoint, device=device)
-        head = KBNNActionHead(mws).to(device)
+        mws, feature_mean, feature_std = _load_kbnn_mws(args.kbnn_checkpoint, device=device)
+        head = KBNNActionHead(mws, feature_mean=feature_mean, feature_std=feature_std).to(device)
 
         # Under the hood, the PyTorch model is PI0Pytorch and uses `action_out_proj` for (width->32).
         model = policy._model  # noqa: SLF001

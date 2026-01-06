@@ -163,6 +163,7 @@ class KBNN():
             return my, Cy, ma, Ca
         return my[-1], Cy[-1], ma[-1], Ca[-1]
     
+            # Diagonal mode uses Cw[i] with shape (no, ni); full mode uses (no, ni, ni).
     @torch.no_grad()
     def train(self, ds_x, ds_y):
         """Train model on a sequence of training data using a Kalman filter-like update."""

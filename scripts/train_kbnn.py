@@ -30,7 +30,7 @@ Output:
 - A `kbnn_checkpoint.pt` compatible with `scripts/serve_kbnn_policy.py` (contains `mws`).
 
 Example:
-  uv run scripts/train_kbnn_diffusion.py \\
+  uv run scripts/train_kbnn.py \\
     --checkpoint-dir /media/data-ssd-2/qiaoan_ckpt/pi05_libero_pytorch \\
     --norm-stats-assets-dir /media/data-ssd-2/qiaoan_ckpt/pi05_29999/assets \\
     --data-root data/libero/kbnn_dataset \\
@@ -110,6 +110,12 @@ def main() -> None:
     ap.add_argument("--steps-per-epoch", type=int, default=2000, help="Random samples per epoch")
     ap.add_argument("--lr", type=float, default=1e-4)
     ap.add_argument(
+        "--feature-stats-samples",
+        type=int,
+        default=0,
+        help="Samples to estimate feature mean/std (0 = one sample per episode if --use-each-episode-once, else steps-per-epoch).",
+    )
+    ap.add_argument(
         "--kbnn-cov-mode",
         choices=["full", "diag"],
         default="diag",
@@ -153,40 +159,10 @@ def main() -> None:
     model = policy._model  # noqa: SLF001
     model.eval()
 
-    # Initialize KBNN weights.
-    geom_with_bias = [int(x) for x in args.geometry.split(",")]
-    if len(geom_with_bias) < 2 or geom_with_bias[0] < 2:
-        raise ValueError(f"Invalid --geometry {geom_with_bias}")
-    geom_no_bias = [geom_with_bias[0] - 1, *geom_with_bias[1:]]
-    if args.init_from:
-        ckpt = torch.load(args.init_from, map_location="cpu")
-        if "mws" not in ckpt:
-            raise ValueError(f"{args.init_from} missing 'mws' list.")
-        init_mws = [w.to(dtype=torch.float32).T for w in ckpt["mws"]]
-        logging.info("[kbnn] init from %s", args.init_from)
-    else:
-        w = np.load(str(Path(args.kbnn_weights) / "action_out_proj_weight.npy"))  # (1024, 32)
-        b = np.load(str(Path(args.kbnn_weights) / "action_out_proj_bias.npy"))  # (32,)
-        w_with_bias = torch.tensor(np.vstack([w, b[None, :]]), dtype=torch.float32)
-        init_mws = [mw.T for mw in initialize_weights(w_with_bias, geom_with_bias)]
-        logging.info("[kbnn] init from linear projection weights")
-
-    kbnn = KBNNOld(
-        geom_no_bias,
-        act_fun=["relu", "relu", "linear"],
-        weight_prior=[mw.to(device=device) for mw in init_mws],
-        no_bias=False,
-        noise=0.0,
-        verbose=False,
-        device=torch.device(device),
-        cov_mode=args.kbnn_cov_mode,
-    )
     if not hasattr(model, "action_out_proj"):
         raise AttributeError("Loaded torch model has no action_out_proj")
     catcher = _HeadInputCatcher()
     hook_handle = model.action_out_proj.register_forward_pre_hook(catcher)
-    if args.lr != 0.0:
-        logging.info("[kbnn] lr=%s (unused; KBNN uses Kalman update)", args.lr)
 
     files = _load_episode_files(args.data_root)
     horizon = int(getattr(train_config.model, "action_horizon", 10))
@@ -213,6 +189,124 @@ def main() -> None:
         act_chunk = _make_action_chunk(actions32, t, horizon)  # (H,32)
         return obs, act_chunk
 
+    def _prepare_inputs(obs):
+        inputs = policy._input_transform(obs)  # noqa: SLF001
+        allowed = {
+            "state",
+            "image",
+            "image_mask",
+            "tokenized_prompt",
+            "tokenized_prompt_mask",
+            "token_ar_mask",
+            "token_loss_mask",
+        }
+        inputs = {k: v for k, v in inputs.items() if k in allowed}
+        import jax
+
+        inputs = jax.tree.map(lambda x: np.asarray(x), inputs)
+        inputs_t = jax.tree.map(lambda x: torch.from_numpy(np.array(x)).to(device)[None, ...], inputs)
+        from openpi.models import model as _model
+
+        return _model.Observation.from_dict(inputs_t)
+
+    def _sample_feature(obs, act_chunk, *, noise=None, time=None):
+        observation = _prepare_inputs(obs)
+        actions_t = torch.from_numpy(act_chunk)[None, ...].to(device, dtype=torch.float32)
+        if noise is None:
+            noise = torch.randn_like(actions_t)
+            noise[..., 7:] = 0.0
+        if time is None:
+            time = torch.rand((1,), device=device, dtype=torch.float32) * 0.999 + 0.001
+        with torch.no_grad():
+            _ = model(observation, actions_t, noise=noise, time=time)
+        if catcher.last_in is None:
+            raise RuntimeError("Failed to capture action_out_proj input.")
+        return catcher.last_in.squeeze(0).to(dtype=torch.float32, device=device)
+
+    # Feature stats for normalization of internal features.
+    ckpt_feature_mean = None
+    ckpt_feature_std = None
+    if args.init_from:
+        ckpt = torch.load(args.init_from, map_location="cpu")
+        if "feature_mean" in ckpt and "feature_std" in ckpt:
+            ckpt_feature_mean = ckpt["feature_mean"].to(dtype=torch.float32, device=device)
+            ckpt_feature_std = ckpt["feature_std"].to(dtype=torch.float32, device=device)
+            logging.info("[kbnn] using feature stats from %s", args.init_from)
+
+    if ckpt_feature_mean is not None and ckpt_feature_std is not None:
+        feature_mean = ckpt_feature_mean
+        feature_std = ckpt_feature_std
+    else:
+        if args.feature_stats_samples > 0:
+            stats_samples = args.feature_stats_samples
+            stats_iter = (sample_training_point() for _ in range(stats_samples))
+        elif args.use_each_episode_once:
+            stats_files = files[:]
+            random.shuffle(stats_files)
+            stats_samples = len(stats_files)
+            stats_iter = (sample_training_point(ep_path) for ep_path in stats_files)
+        else:
+            stats_samples = args.steps_per_epoch
+            stats_iter = (sample_training_point() for _ in range(stats_samples))
+
+        sum_x = None
+        sum_x2 = None
+        count = 0
+        for _ in range(stats_samples):
+            obs, act_chunk = next(stats_iter)
+            feats = _sample_feature(obs, act_chunk, noise=noise, time=time)
+            feats = feats.reshape(-1, feats.shape[-1])
+            if sum_x is None:
+                sum_x = torch.zeros(feats.shape[-1], dtype=torch.float64, device=device)
+                sum_x2 = torch.zeros(feats.shape[-1], dtype=torch.float64, device=device)
+            sum_x += feats.double().sum(dim=0)
+            sum_x2 += (feats.double() ** 2).sum(dim=0)
+            count += feats.shape[0]
+
+        feature_mean = (sum_x / max(count, 1)).float()
+        feature_var = (sum_x2 / max(count, 1) - feature_mean.double() ** 2).clamp_min(1e-12)
+        feature_std = torch.sqrt(feature_var).float().clamp_min(1e-6)
+        logging.info(
+            "[kbnn] feature stats: count=%s mean_abs=%.6f std_mean=%.6f",
+            count,
+            float(feature_mean.abs().mean()),
+            float(feature_std.mean()),
+        )
+
+    # Initialize KBNN weights with feature-normalized correction.
+    geom_with_bias = [int(x) for x in args.geometry.split(",")]
+    if len(geom_with_bias) < 2 or geom_with_bias[0] < 2:
+        raise ValueError(f"Invalid --geometry {geom_with_bias}")
+    geom_no_bias = [geom_with_bias[0] - 1, *geom_with_bias[1:]]
+    if args.init_from:
+        ckpt = torch.load(args.init_from, map_location="cpu")
+        if "mws" not in ckpt:
+            raise ValueError(f"{args.init_from} missing 'mws' list.")
+        init_mws = [w.to(dtype=torch.float32).T for w in ckpt["mws"]]
+        logging.info("[kbnn] init from %s", args.init_from)
+    else:
+        w = np.load(str(Path(args.kbnn_weights) / "action_out_proj_weight.npy"))  # (1024, 32)
+        b = np.load(str(Path(args.kbnn_weights) / "action_out_proj_bias.npy"))  # (32,)
+        W = torch.tensor(w, dtype=torch.float32, device=device)
+        b = torch.tensor(b, dtype=torch.float32, device=device)
+        W_prime = feature_std[:, None] * W
+        b_prime = feature_mean @ W + b
+        w_with_bias = torch.vstack([W_prime, b_prime[None, :]]).cpu()
+        init_mws = [mw.T for mw in initialize_weights(w_with_bias, geom_with_bias)]
+        logging.info("[kbnn] init from linear projection weights (feature-normalized)")
+
+    kbnn = KBNNOld(
+        geom_no_bias,
+        act_fun=["relu", "relu", "linear"],
+        weight_prior=[mw.to(device=device) for mw in init_mws],
+        no_bias=False,
+        noise=0.0,
+        verbose=False,
+        device=torch.device(device),
+        cov_mode=args.kbnn_cov_mode,
+    )
+    if args.lr != 0.0:
+        logging.info("[kbnn] lr=%s (unused; KBNN uses Kalman update)", args.lr)
     def _save_kbnn(path: str) -> None:
         torch.save(
             {
@@ -220,6 +314,8 @@ def main() -> None:
                 "kbnn_geometry": geom_no_bias,
                 "cov_mode": getattr(kbnn, "cov_mode", "full"),
                 "mws": [w.detach().cpu().T for w in kbnn.mw],
+                "feature_mean": feature_mean.detach().cpu(),
+                "feature_std": feature_std.detach().cpu(),
             },
             path,
         )
@@ -239,48 +335,23 @@ def main() -> None:
         for step in range(steps):
             obs, act_chunk = next(sample_iter)
 
-            # Apply the same transforms used by the policy server (parse/normalize/tokenize).
-            inputs = policy._input_transform(obs)  # noqa: SLF001
-
-            # Keep only model-consumed keys. The raw "prompt" (string) can be present in intermediate
-            # transform stages and would break numpy->torch conversion.
-            allowed = {
-                "state",
-                "image",
-                "image_mask",
-                "tokenized_prompt",
-                "tokenized_prompt_mask",
-                "token_ar_mask",
-                "token_loss_mask",
-            }
-            inputs = {k: v for k, v in inputs.items() if k in allowed}
-
-            # Convert leaves to numpy arrays without collapsing nested dicts (e.g., image dict).
-            import jax  # local import to keep module import time down
-
-            inputs = jax.tree.map(lambda x: np.asarray(x), inputs)
-
-            # Policy.infer would add batch dim and convert to torch; replicate that for training.
-            inputs_t = jax.tree.map(lambda x: torch.from_numpy(np.array(x)).to(device)[None, ...], inputs)
-            from openpi.models import model as _model  # local import to avoid circulars
-
-            observation = _model.Observation.from_dict(inputs_t)
-            actions_t = torch.from_numpy(act_chunk)[None, ...].to(device, dtype=torch.float32)  # (1,H,32)
-
-            # Use noise with padded dims masked to zero to avoid learning spurious padding behavior.
+            actions_t = torch.from_numpy(act_chunk)[None, ...].to(device, dtype=torch.float32)
             noise = torch.randn_like(actions_t)
             noise[..., 7:] = 0.0
-
-            # Use a fixed random time per sample (in [0,1]); keep float32.
             time = torch.rand((1,), device=device, dtype=torch.float32) * 0.999 + 0.001
-
-            with torch.no_grad():
-                _ = model(observation, actions_t, noise=noise, time=time)
-            if catcher.last_in is None:
-                raise RuntimeError("Failed to capture action_out_proj input.")
-
-            x = catcher.last_in.squeeze(0).to(dtype=torch.float32, device=kbnn.device)
+            feats = _sample_feature(obs, act_chunk)
+            x = ((feats - feature_mean) / feature_std).to(dtype=torch.float32, device=kbnn.device)
             y = (noise - actions_t).squeeze(0).to(dtype=torch.float32, device=kbnn.device)
+            if (global_step + 1) % 100 == 0:
+                logging.info(
+                    "[kbnn] sample shapes: x=%s y=%s x_mean=%.6f x_std=%.6f y_mean=%.6f y_std=%.6f",
+                    tuple(x.shape),
+                    tuple(y.shape),
+                    float(x.mean()),
+                    float(x.std(unbiased=False)),
+                    float(y.mean()),
+                    float(y.std(unbiased=False)),
+                )
             kbnn.train(x, y)
 
             pred, _, _, _ = kbnn.single_forward_pass(x, training=False)
