@@ -110,7 +110,7 @@ def main() -> None:
     ap.add_argument("--policy-config", default="pi05_libero", help="OpenPI config name")
     ap.add_argument("--data-root", default="data/libero/kbnn_dataset", help="Collected dataset root")
     ap.add_argument("--kbnn-weights", default="kbnn_weights", help="Dir with action_out_proj_weight.npy and bias.npy")
-    ap.add_argument("--geometry", default="1025,2050,2050,32", help="KBNN geometry for initialization (includes bias)")
+    ap.add_argument("--geometry", default="1025,2050,32", help="KBNN geometry for initialization (includes bias)")
     ap.add_argument(
         "--env-ids",
         type=int,
