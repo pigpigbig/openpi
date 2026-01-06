@@ -1,3 +1,4 @@
+import logging
 import torch
 import numpy as np
 from tqdm import tqdm
@@ -67,6 +68,7 @@ class KBNN():
                 ni = self.layers[i] + 1
             no = self.layers[i + 1]
 
+            logging.info("[kbnn_old] init layer %d: ni=%d no=%d Cw_shape=(%d,%d,%d)", i, ni, no, no, ni, ni)
             # --- FIX: Create tensors directly on the specified device ---
             mw[i] = torch.randn((ni, no), device=self.device)
             if not self.no_bias:
