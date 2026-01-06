@@ -266,7 +266,7 @@ def main() -> None:
         count = 0
         for _ in range(stats_samples):
             obs, act_chunk = next(stats_iter)
-            feats = _sample_feature(obs, act_chunk, noise=noise, time=time)
+            feats = _sample_feature(obs, act_chunk)
             feats = feats.reshape(-1, feats.shape[-1])
             if sum_x is None:
                 sum_x = torch.zeros(feats.shape[-1], dtype=torch.float64, device=device)
