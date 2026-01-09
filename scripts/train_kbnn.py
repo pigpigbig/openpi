@@ -59,7 +59,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from weight_initialization import initialize_weights  # noqa: E402
-from KBNN_old import KBNN as KBNNOld  # noqa: E402
+from KBNN2 import KBNN as KBNNFull  # noqa: E402
 
 from openpi.policies import policy_config as _policy_config  # noqa: E402
 from openpi.training import checkpoints as _checkpoints  # noqa: E402
@@ -296,25 +296,14 @@ def main() -> None:
         init_mws = [w.to(dtype=torch.float32).T for w in ckpt["mws"]]
         logging.info("[kbnn] init from %s", args.init_from)
     else:
-        w = np.load(str(Path(args.kbnn_weights) / "action_out_proj_weight.npy"))  # (1024, 32)
-        b = np.load(str(Path(args.kbnn_weights) / "action_out_proj_bias.npy"))  # (32,)
-        W = torch.tensor(w, dtype=torch.float32, device=device)
-        b = torch.tensor(b, dtype=torch.float32, device=device)
-        W_prime = feature_std[:, None] * W
-        b_prime = feature_mean @ W + b
-        w_with_bias = torch.vstack([W_prime, b_prime[None, :]]).cpu()
-        init_mws = [mw.T for mw in initialize_weights(w_with_bias, geom_with_bias)]
-        logging.info("[kbnn] init from linear projection weights (feature-normalized)")
+        # Start from zero-mean KBNN so baseline behavior is unchanged.
+        init_mws = None
+        logging.info("[kbnn] init from zeros (residual KBNN)")
 
-    kbnn = KBNNOld(
-        geom_no_bias,
-        act_fun=["relu", "relu", "linear"],
-        weight_prior=[mw.to(device=device) for mw in init_mws],
-        no_bias=False,
-        noise=0.0,
-        verbose=False,
-        device=torch.device(device),
-    )
+    kbnn = KBNNFull(geom_no_bias, init_scale=0.0, init_cov=1e-2, dtype=torch.float32, device=device)
+    if init_mws is not None:
+        for i, mw in enumerate(init_mws):
+            kbnn.mws[i] = mw.to(device=device)
     if args.lr != 0.0:
         logging.info("[kbnn] lr=%s (unused; KBNN uses Kalman update)", args.lr)
     def _save_kbnn(path: str) -> None:
@@ -349,9 +338,12 @@ def main() -> None:
             noise = torch.randn_like(actions_t)
             noise[..., 7:] = 0.0
             time = torch.rand((1,), device=device, dtype=torch.float32) * 0.999 + 0.001
-            feats = _sample_feature(obs, act_chunk)
-            x = ((feats - feature_mean) / feature_std).to(dtype=torch.float32, device=kbnn.device)
-            y = (noise - actions_t).squeeze(0).to(dtype=torch.float32, device=kbnn.device)
+            feats = _sample_feature(obs, act_chunk, noise=noise, time=time)
+            x_raw = feats.to(dtype=torch.float32, device=device)
+            x = ((x_raw - feature_mean) / feature_std).to(dtype=torch.float32, device=kbnn.device)
+            base_out = model.action_out_proj(x_raw).detach()
+            target = (noise - actions_t).squeeze(0).to(dtype=torch.float32, device=kbnn.device)
+            y = (target - base_out).to(dtype=torch.float32, device=kbnn.device)
             if (global_step + 1) % 100 == 0:
                 logging.info(
                     "[kbnn] sample shapes: x=%s y=%s x_mean=%.6f x_std=%.6f y_mean=%.6f y_std=%.6f",
@@ -362,7 +354,9 @@ def main() -> None:
                     float(y.mean()),
                     float(y.std(unbiased=False)),
                 )
-            kbnn.train(x, y)
+            for xi, yi in zip(x, y):
+                kbnn.forward(xi)
+                kbnn.backward(yi)
 
             pred, _, _, _ = kbnn.single_forward_pass(x, training=False)
             loss = torch.mean((pred - y) ** 2)

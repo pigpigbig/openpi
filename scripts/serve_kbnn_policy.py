@@ -56,6 +56,16 @@ class KBNNActionHead(torch.nn.Module):
         return hidden
 
 
+class ResidualActionHead(torch.nn.Module):
+    def __init__(self, base_head: torch.nn.Module, kbnn_head: KBNNActionHead):
+        super().__init__()
+        self.base_head = base_head
+        self.kbnn_head = kbnn_head
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.base_head(x) + self.kbnn_head(x)
+
+
 def _load_kbnn_mws(kbnn_checkpoint: str, device: str):
     ckpt = torch.load(kbnn_checkpoint, map_location="cpu")
     if "mws" not in ckpt:
@@ -145,13 +155,13 @@ def main(args: Args) -> None:
     if use_kbnn:
         device = policy._pytorch_device  # noqa: SLF001
         mws, feature_mean, feature_std = _load_kbnn_mws(args.kbnn_checkpoint, device=device)
-        head = KBNNActionHead(mws, feature_mean=feature_mean, feature_std=feature_std).to(device)
+        kbnn_head = KBNNActionHead(mws, feature_mean=feature_mean, feature_std=feature_std).to(device)
 
         # Under the hood, the PyTorch model is PI0Pytorch and uses `action_out_proj` for (width->32).
         model = policy._model  # noqa: SLF001
         if not hasattr(model, "action_out_proj"):
             raise AttributeError("Loaded policy model does not have `action_out_proj`; cannot attach KBNN head.")
-        model.action_out_proj = head
+        model.action_out_proj = ResidualActionHead(model.action_out_proj, kbnn_head).to(device)
         logging.info("Attached KBNN action head from %s", args.kbnn_checkpoint)
     else:
         logging.info("Serving baseline pi05 (no KBNN).")
