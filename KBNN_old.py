@@ -211,7 +211,13 @@ class KBNN():
                 Da = (k ** 2) * (Cy_new - Cy[i])
 
                 Cwa = self.Cw[i] @ mz_
-                Cza = torch.diag(Cz) @ self.mw[i]
+                # Cza = torch.diag(Cz) @ self.mw[i]
+                # Bias-aware diagonal Cz for matmul with (ni+1, no) weights.
+                if self.no_bias:
+                    Cz_aug = Cz
+                else:
+                    Cz_aug = torch.cat((Cz, torch.zeros(1, device=self.device)), 0)
+                Cza = torch.diag(Cz_aug) @ self.mw[i]
 
                 Ca_inv = 1 / (Ca[i] + 1e-9)
 
