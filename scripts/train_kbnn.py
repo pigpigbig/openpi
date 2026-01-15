@@ -53,13 +53,13 @@ from pathlib import Path
 import numpy as np
 import torch
 
-# Ensure repo root on path so `KBNN2.py` and `weight_initialization.py` are importable.
+# Ensure repo root on path so `KBNN_old.py` and `weight_initialization.py` are importable.
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from weight_initialization import initialize_weights  # noqa: E402
-from KBNN2 import KBNN as KBNNFull  # noqa: E402
+from KBNN_old import KBNN as KBNNOld  # noqa: E402
 
 from openpi.policies import policy_config as _policy_config  # noqa: E402
 from openpi.training import checkpoints as _checkpoints  # noqa: E402
@@ -297,13 +297,20 @@ def main() -> None:
         logging.info("[kbnn] init from %s", args.init_from)
     else:
         # Start from zero-mean KBNN so baseline behavior is unchanged.
-        init_mws = None
+        init_mws = []
+        for i in range(len(geom_no_bias) - 1):
+            init_mws.append(torch.zeros((geom_no_bias[i] + 1, geom_no_bias[i + 1]), dtype=torch.float32))
         logging.info("[kbnn] init from zeros (residual KBNN)")
 
-    kbnn = KBNNFull(geom_no_bias, init_scale=0.0, init_cov=1e-2, dtype=torch.float32, device=device)
-    if init_mws is not None:
-        for i, mw in enumerate(init_mws):
-            kbnn.mws[i] = mw.to(device=device)
+    kbnn = KBNNOld(
+        geom_no_bias,
+        act_fun=["relu", "relu", "linear"],
+        weight_prior=[mw.to(device=device) for mw in init_mws],
+        no_bias=False,
+        noise=0.0,
+        verbose=False,
+        device=torch.device(device),
+    )
     if args.lr != 0.0:
         logging.info("[kbnn] lr=%s (unused; KBNN uses Kalman update)", args.lr)
     def _save_kbnn(path: str) -> None:
@@ -354,9 +361,7 @@ def main() -> None:
                     float(y.mean()),
                     float(y.std(unbiased=False)),
                 )
-            for xi, yi in zip(x, y):
-                kbnn.forward(xi)
-                kbnn.backward(yi)
+            kbnn.train(x, y)
 
             pred, _, _, _ = kbnn.single_forward_pass(x, training=False)
             loss = torch.mean((pred - y) ** 2)
