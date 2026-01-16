@@ -20,7 +20,15 @@ class KBNNActionHead(torch.nn.Module):
     i.e. a list of layer mean weights `mws`, each shaped (out_dim, in_dim+1) including bias.
     """
 
-    def __init__(self, mws: list[torch.Tensor], feature_mean: torch.Tensor | None = None, feature_std: torch.Tensor | None = None):
+    def __init__(
+        self,
+        mws: list[torch.Tensor],
+        feature_mean: torch.Tensor | None = None,
+        feature_std: torch.Tensor | None = None,
+        proj_matrix: torch.Tensor | None = None,
+        horizon: int | None = None,
+        feature_dim: int = 1024,
+    ):
         super().__init__()
         self.mws = torch.nn.ParameterList([torch.nn.Parameter(w.clone().detach()) for w in mws])
         if feature_mean is not None and feature_std is not None:
@@ -29,6 +37,12 @@ class KBNNActionHead(torch.nn.Module):
         else:
             self.feature_mean = None
             self.feature_std = None
+        if proj_matrix is not None:
+            self.register_buffer("proj_matrix", proj_matrix.clone().detach())
+        else:
+            self.proj_matrix = None
+        self.horizon = horizon
+        self.feature_dim = feature_dim
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # x: (B, H, D) or (N, D)
@@ -42,7 +56,14 @@ class KBNNActionHead(torch.nn.Module):
             raise ValueError(f"Expected 2D or 3D tensor, got shape={orig_shape}")
 
         hidden = x.to(dtype=torch.float32)
-        if self.feature_mean is not None and self.feature_std is not None:
+        if self.proj_matrix is not None:
+            if hidden.ndim != 3:
+                raise ValueError("proj_matrix expects [B,H,D] input")
+            if self.horizon is None:
+                self.horizon = hidden.shape[1]
+            flat = hidden.reshape(hidden.shape[0], -1)
+            hidden = flat @ self.proj_matrix.T
+        elif self.feature_mean is not None and self.feature_std is not None:
             hidden = (hidden - self.feature_mean) / self.feature_std
         for layer_idx, mw in enumerate(self.mws):
             ones = torch.ones(hidden.shape[0], 1, dtype=hidden.dtype, device=hidden.device)
@@ -51,7 +72,9 @@ class KBNNActionHead(torch.nn.Module):
             if layer_idx != len(self.mws) - 1:
                 hidden = torch.relu(hidden)
 
-        if len(orig_shape) == 3:
+        if len(orig_shape) == 3 and self.proj_matrix is not None:
+            return hidden.reshape(batch_size, horizon, -1)
+        if len(orig_shape) == 3 and self.proj_matrix is None:
             return hidden.reshape(batch_size, horizon, -1)
         return hidden
 
@@ -73,13 +96,16 @@ def _load_kbnn_mws(kbnn_checkpoint: str, device: str):
     mws = [w.to(dtype=torch.float32, device=device) for w in ckpt["mws"]]
     feature_mean = ckpt.get("feature_mean")
     feature_std = ckpt.get("feature_std")
+    proj_matrix = ckpt.get("proj_matrix")
     if feature_mean is not None and feature_std is not None:
         feature_mean = feature_mean.to(dtype=torch.float32, device=device)
         feature_std = feature_std.to(dtype=torch.float32, device=device)
     else:
         feature_mean = None
         feature_std = None
-    return mws, feature_mean, feature_std
+    if proj_matrix is not None:
+        proj_matrix = proj_matrix.to(dtype=torch.float32, device=device)
+    return mws, feature_mean, feature_std, proj_matrix
 
 
 @dataclasses.dataclass
@@ -154,8 +180,14 @@ def main(args: Args) -> None:
     use_kbnn = (not args.disable_kbnn) and (args.kbnn_checkpoint is not None)
     if use_kbnn:
         device = policy._pytorch_device  # noqa: SLF001
-        mws, feature_mean, feature_std = _load_kbnn_mws(args.kbnn_checkpoint, device=device)
-        kbnn_head = KBNNActionHead(mws, feature_mean=feature_mean, feature_std=feature_std).to(device)
+        mws, feature_mean, feature_std, proj_matrix = _load_kbnn_mws(args.kbnn_checkpoint, device=device)
+        kbnn_head = KBNNActionHead(
+            mws,
+            feature_mean=feature_mean,
+            feature_std=feature_std,
+            proj_matrix=proj_matrix,
+            horizon=int(getattr(train_config.model, "action_horizon", 10)),
+        ).to(device)
 
         # Under the hood, the PyTorch model is PI0Pytorch and uses `action_out_proj` for (width->32).
         model = policy._model  # noqa: SLF001

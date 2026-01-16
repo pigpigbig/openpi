@@ -110,7 +110,9 @@ def main() -> None:
     ap.add_argument("--policy-config", default="pi05_libero", help="OpenPI config name")
     ap.add_argument("--data-root", default="data/libero/kbnn_dataset", help="Collected dataset root")
     ap.add_argument("--kbnn-weights", default="kbnn_weights", help="Dir with action_out_proj_weight.npy and bias.npy")
-    ap.add_argument("--geometry", default="1025,2050,32", help="KBNN geometry for initialization (includes bias)")
+    ap.add_argument("--geometry", default="2048,512", help="KBNN proj_dim,hidden_dim (output is horizon*32)")
+    ap.add_argument("--proj-dim", type=int, default=2048, help="Projection dimension for flattened features")
+    ap.add_argument("--kbnn-hidden", type=int, default=64, help="Hidden dimension for KBNN")
     ap.add_argument(
         "--env-ids",
         type=int,
@@ -285,10 +287,20 @@ def main() -> None:
         )
 
     # Initialize KBNN weights with feature-normalized correction.
-    geom_with_bias = [int(x) for x in args.geometry.split(",")]
-    if len(geom_with_bias) < 2 or geom_with_bias[0] < 2:
-        raise ValueError(f"Invalid --geometry {geom_with_bias}")
-    geom_no_bias = [geom_with_bias[0] - 1, *geom_with_bias[1:]]
+    geom_parts = [int(x) for x in args.geometry.split(",")] if args.geometry else []
+    proj_dim = args.proj_dim
+    kbnn_hidden = args.kbnn_hidden
+    if len(geom_parts) >= 2:
+        proj_dim = geom_parts[0]
+        kbnn_hidden = geom_parts[1]
+        if len(geom_parts) > 2:
+            logging.info("[kbnn] geometry has extra values; using only first two: %s", geom_parts[:2])
+
+    feat_dim = 1024
+    flat_dim = horizon * feat_dim
+    out_dim = horizon * 32
+    geom_no_bias = [proj_dim, kbnn_hidden, out_dim]
+    geom_with_bias = [proj_dim + 1, kbnn_hidden, out_dim]
     if args.init_from:
         ckpt = torch.load(args.init_from, map_location="cpu")
         if "mws" not in ckpt:
@@ -301,6 +313,13 @@ def main() -> None:
         for i in range(len(geom_no_bias) - 1):
             init_mws.append(torch.zeros((geom_no_bias[i] + 1, geom_no_bias[i + 1]), dtype=torch.float32))
         logging.info("[kbnn] init from zeros (residual KBNN)")
+
+    if args.init_from:
+        proj_matrix = ckpt.get("proj_matrix")
+        if proj_matrix is None:
+            proj_matrix = torch.randn(proj_dim, flat_dim, device=device) / math.sqrt(flat_dim)
+    else:
+        proj_matrix = torch.randn(proj_dim, flat_dim, device=device) / math.sqrt(flat_dim)
 
     kbnn = KBNNOld(
         geom_no_bias,
@@ -322,6 +341,10 @@ def main() -> None:
                 "mws": [w.detach().cpu().T for w in kbnn.mw],
                 "feature_mean": feature_mean.detach().cpu(),
                 "feature_std": feature_std.detach().cpu(),
+                "proj_matrix": proj_matrix.detach().cpu(),
+                "proj_dim": proj_dim,
+                "kbnn_hidden": kbnn_hidden,
+                "kbnn_out_dim": out_dim,
             },
             path,
         )
@@ -346,14 +369,21 @@ def main() -> None:
             noise[..., 7:] = 0.0
             time = torch.rand((1,), device=device, dtype=torch.float32) * 0.999 + 0.001
             feats = _sample_feature(obs, act_chunk, noise=noise, time=time)
+            # reformat x_raw to 10240 vector
+            # multiply random initialized matrix to reduce dimension around 2k
+            # keep matrix in the checkpoint because we will need it for testing
+            # Use the 2k vector as the new input
+            # Output as a 320 vector
             x_raw = feats.to(dtype=torch.float32, device=device)
             if (global_step + 1) % 100 == 0:
                 print(f"[kbnn] x_raw shape: {tuple(x_raw.shape)}")
-            # x = ((x_raw - feature_mean) / feature_std).to(dtype=torch.float32, device=kbnn.device)
-            x = x_raw.to(dtype=torch.float32, device=kbnn.device)
+            x_flat = x_raw.reshape(-1)
+            x_proj = (proj_matrix @ x_flat).to(dtype=torch.float32, device=kbnn.device)
+            x = x_proj.unsqueeze(0)
             base_out = model.action_out_proj(x_raw).detach()
             target = (noise - actions_t).squeeze(0).to(dtype=torch.float32, device=kbnn.device)
-            y = (target - base_out).to(dtype=torch.float32, device=kbnn.device)
+            y_flat = (target - base_out).reshape(-1).to(dtype=torch.float32, device=kbnn.device)
+            y = y_flat.unsqueeze(0)
             if (global_step + 1) % 100 == 0:
                 logging.info(
                     "[kbnn] sample shapes: x=%s y=%s x_mean=%.6f x_std=%.6f y_mean=%.6f y_std=%.6f",
