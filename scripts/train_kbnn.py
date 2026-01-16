@@ -347,7 +347,8 @@ def main() -> None:
             time = torch.rand((1,), device=device, dtype=torch.float32) * 0.999 + 0.001
             feats = _sample_feature(obs, act_chunk, noise=noise, time=time)
             x_raw = feats.to(dtype=torch.float32, device=device)
-            logging.info("[kbnn] x_raw shape: %s", tuple(x_raw.shape))
+            if (global_step + 1) % 100 == 0:
+                print(f"[kbnn] x_raw shape: {tuple(x_raw.shape)}")
             # x = ((x_raw - feature_mean) / feature_std).to(dtype=torch.float32, device=kbnn.device)
             x = x_raw.to(dtype=torch.float32, device=kbnn.device)
             base_out = model.action_out_proj(x_raw).detach()
