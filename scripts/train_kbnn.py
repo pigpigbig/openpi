@@ -361,10 +361,9 @@ def main() -> None:
                     float(y.mean()),
                     float(y.std(unbiased=False)),
                 )
-            kbnn.train(x, y)
-
             pred, _, _, _ = kbnn.single_forward_pass(x, training=False)
             loss = torch.mean((pred - y) ** 2)
+            kbnn.train(x, y)
             running += float(loss.detach().cpu())
             global_step += 1
             if (step + 1) % 100 == 0:
