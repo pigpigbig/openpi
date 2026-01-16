@@ -317,7 +317,14 @@ def main() -> None:
     if args.init_from:
         proj_matrix = ckpt.get("proj_matrix")
         if proj_matrix is None:
-            proj_matrix = torch.randn(proj_dim, flat_dim, device=device) / math.sqrt(flat_dim)
+            raise ValueError(f"{args.init_from} missing proj_matrix; refusing to create a new one.")
+        proj_matrix = proj_matrix.to(dtype=torch.float32, device=device)
+        if proj_matrix.shape != (proj_dim, flat_dim):
+            raise ValueError(
+                "proj_matrix shape mismatch: "
+                f"checkpoint has {tuple(proj_matrix.shape)}, "
+                f"expected {(proj_dim, flat_dim)}."
+            )
     else:
         proj_matrix = torch.randn(proj_dim, flat_dim, device=device) / math.sqrt(flat_dim)
 
