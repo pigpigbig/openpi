@@ -49,21 +49,21 @@ class KBNNActionHead(torch.nn.Module):
         orig_shape = x.shape
         if x.ndim == 3:
             batch_size, horizon, width = x.shape
-            x = x.reshape(batch_size * horizon, width)
         elif x.ndim == 2:
-            pass
+            # Treat as a single batch with horizon=1.
+            batch_size, width = x.shape
+            horizon = 1
+            x = x.unsqueeze(1)
         else:
             raise ValueError(f"Expected 2D or 3D tensor, got shape={orig_shape}")
 
         hidden = x.to(dtype=torch.float32)
         if self.proj_matrix is not None:
-            if hidden.ndim != 3:
-                raise ValueError("proj_matrix expects [B,H,D] input")
             if self.horizon is None:
-                self.horizon = hidden.shape[1]
+                self.horizon = horizon
             flat = hidden.reshape(hidden.shape[0], -1)
             hidden = flat @ self.proj_matrix.T
-        elif self.feature_mean is not None and self.feature_std is not None:
+        if self.feature_mean is not None and self.feature_std is not None:
             hidden = (hidden - self.feature_mean) / self.feature_std
         for layer_idx, mw in enumerate(self.mws):
             ones = torch.ones(hidden.shape[0], 1, dtype=hidden.dtype, device=hidden.device)
@@ -72,9 +72,7 @@ class KBNNActionHead(torch.nn.Module):
             if layer_idx != len(self.mws) - 1:
                 hidden = torch.relu(hidden)
 
-        if len(orig_shape) == 3 and self.proj_matrix is not None:
-            return hidden.reshape(batch_size, horizon, -1)
-        if len(orig_shape) == 3 and self.proj_matrix is None:
+        if len(orig_shape) == 3 or (len(orig_shape) == 2 and self.proj_matrix is not None):
             return hidden.reshape(batch_size, horizon, -1)
         return hidden
 
