@@ -130,6 +130,11 @@ def main() -> None:
         default=0,
         help="Samples to estimate feature mean/std (0 = one sample per episode if --use-each-episode-once, else steps-per-epoch).",
     )
+    ap.add_argument(
+        "--no-feature-normalization",
+        action="store_true",
+        help="Disable feature normalization (use mean=0, std=1).",
+    )
     ap.add_argument("--save-every", type=int, default=500, help="Save a KBNN checkpoint every N steps")
     ap.add_argument(
         "--save-initial",
@@ -287,57 +292,62 @@ def main() -> None:
         proj_matrix = torch.randn(proj_dim, flat_dim, device=device) / math.sqrt(flat_dim)
 
     # Feature stats for normalization of projected features.
-    ckpt_feature_mean = None
-    ckpt_feature_std = None
-    if ckpt is not None:
-        if "feature_mean" in ckpt and "feature_std" in ckpt:
-            ckpt_feature_mean = ckpt["feature_mean"].to(dtype=torch.float32, device=device)
-            ckpt_feature_std = ckpt["feature_std"].to(dtype=torch.float32, device=device)
-            logging.info("[kbnn] using feature stats from %s", args.init_from)
-
-    if ckpt_feature_mean is not None and ckpt_feature_std is not None:
-        feature_mean = ckpt_feature_mean
-        feature_std = ckpt_feature_std
+    if args.no_feature_normalization:
+        feature_mean = torch.zeros(proj_dim, dtype=torch.float32, device=device)
+        feature_std = torch.ones(proj_dim, dtype=torch.float32, device=device)
+        logging.info("[kbnn] feature normalization disabled (mean=0, std=1)")
     else:
-        if args.feature_stats_samples > 0:
-            stats_samples = args.feature_stats_samples
-            stats_iter = (sample_training_point() for _ in range(stats_samples))
-        elif args.use_each_episode_once:
-            stats_files = files[:]
-            random.shuffle(stats_files)
-            stats_samples = len(stats_files)
-            stats_iter = (sample_training_point(ep_path) for ep_path in stats_files)
+        ckpt_feature_mean = None
+        ckpt_feature_std = None
+        if ckpt is not None:
+            if "feature_mean" in ckpt and "feature_std" in ckpt:
+                ckpt_feature_mean = ckpt["feature_mean"].to(dtype=torch.float32, device=device)
+                ckpt_feature_std = ckpt["feature_std"].to(dtype=torch.float32, device=device)
+                logging.info("[kbnn] using feature stats from %s", args.init_from)
+
+        if ckpt_feature_mean is not None and ckpt_feature_std is not None:
+            feature_mean = ckpt_feature_mean
+            feature_std = ckpt_feature_std
         else:
-            stats_samples = args.steps_per_epoch
-            stats_iter = (sample_training_point() for _ in range(stats_samples))
+            if args.feature_stats_samples > 0:
+                stats_samples = args.feature_stats_samples
+                stats_iter = (sample_training_point() for _ in range(stats_samples))
+            elif args.use_each_episode_once:
+                stats_files = files[:]
+                random.shuffle(stats_files)
+                stats_samples = len(stats_files)
+                stats_iter = (sample_training_point(ep_path) for ep_path in stats_files)
+            else:
+                stats_samples = args.steps_per_epoch
+                stats_iter = (sample_training_point() for _ in range(stats_samples))
 
-        sum_x = torch.zeros(proj_dim, dtype=torch.float64, device=device)
-        sum_x2 = torch.zeros(proj_dim, dtype=torch.float64, device=device)
-        count = 0
-        for _ in range(stats_samples):
-            obs, act_chunk = next(stats_iter)
-            feats = _sample_feature(obs, act_chunk)
-            feats = feats.reshape(-1, feats.shape[-1])
-            x_flat = feats.reshape(-1).to(dtype=torch.float32, device=device)
-            x_proj = proj_matrix @ x_flat
-            sum_x += x_proj.double()
-            sum_x2 += (x_proj.double() ** 2)
-            count += 1
+            sum_x = torch.zeros(proj_dim, dtype=torch.float64, device=device)
+            sum_x2 = torch.zeros(proj_dim, dtype=torch.float64, device=device)
+            count = 0
+            for _ in range(stats_samples):
+                obs, act_chunk = next(stats_iter)
+                feats = _sample_feature(obs, act_chunk)
+                feats = feats.reshape(-1, feats.shape[-1])
+                x_flat = feats.reshape(-1).to(dtype=torch.float32, device=device)
+                x_proj = proj_matrix @ x_flat
+                sum_x += x_proj.double()
+                sum_x2 += (x_proj.double() ** 2)
+                count += 1
 
-        feature_mean = (sum_x / max(count, 1)).float()
-        feature_var = (sum_x2 / max(count, 1) - feature_mean.double() ** 2).clamp_min(1e-12)
-        feature_std = torch.sqrt(feature_var).float().clamp_min(1e-6)
-        logging.info(
-            "[kbnn] feature stats (proj): count=%s mean_abs=%.6f std_mean=%.6f",
-            count,
-            float(feature_mean.abs().mean()),
-            float(feature_std.mean()),
-        )
-        logging.info(
-            "[kbnn] feature_mean[:5]=%s feature_std[:5]=%s",
-            feature_mean[:5].tolist(),
-            feature_std[:5].tolist(),
-        )
+            feature_mean = (sum_x / max(count, 1)).float()
+            feature_var = (sum_x2 / max(count, 1) - feature_mean.double() ** 2).clamp_min(1e-12)
+            feature_std = torch.sqrt(feature_var).float().clamp_min(1e-6)
+            logging.info(
+                "[kbnn] feature stats (proj): count=%s mean_abs=%.6f std_mean=%.6f",
+                count,
+                float(feature_mean.abs().mean()),
+                float(feature_std.mean()),
+            )
+            logging.info(
+                "[kbnn] feature_mean[:5]=%s feature_std[:5]=%s",
+                feature_mean[:5].tolist(),
+                feature_std[:5].tolist(),
+            )
 
     kbnn = KBNNOld(
         geom_no_bias,
