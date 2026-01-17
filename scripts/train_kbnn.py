@@ -111,7 +111,7 @@ def main() -> None:
     ap.add_argument("--policy-config", default="pi05_libero", help="OpenPI config name")
     ap.add_argument("--data-root", default="data/libero/kbnn_dataset", help="Collected dataset root")
     ap.add_argument("--kbnn-weights", default="kbnn_weights", help="Dir with action_out_proj_weight.npy and bias.npy")
-    ap.add_argument("--geometry", default="2048,512", help="KBNN proj_dim,hidden_dim (output is horizon*32)")
+    ap.add_argument("--geometry", default=None, help="KBNN proj_dim,hidden_dim (output is horizon*32)")
     ap.add_argument("--proj-dim", type=int, default=2048, help="Projection dimension for flattened features")
     ap.add_argument("--kbnn-hidden", type=int, default=64, help="Hidden dimension for KBNN")
     ap.add_argument(
