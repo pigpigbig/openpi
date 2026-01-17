@@ -137,7 +137,7 @@ class Args:
     norm_stats_assets_dir: str | None = None
 
     # KBNN checkpoint (recommended: output of scripts/train_kbnn.py). If None, serve baseline pi05.
-    kbnn_checkpoint: str | None = "kbnn_checkpoint.pt"
+    kbnn_checkpoint: str | None = None
 
     # Disable KBNN even if `kbnn_checkpoint` is provided.
     disable_kbnn: bool = False
