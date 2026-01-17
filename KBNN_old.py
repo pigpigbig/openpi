@@ -35,6 +35,7 @@ class KBNN():
         self.input_scaler = input_scaler
         self.output_scaler = output_scaler
         self.no_bias = no_bias
+        self.verbose = verbose
 
         # --- FIX: Set device for all tensors in this class ---
         if device is None:
