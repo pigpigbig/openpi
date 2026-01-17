@@ -149,6 +149,11 @@ def main() -> None:
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--device", default="cuda")
     ap.add_argument("--output", default="kbnn_checkpoint.pt")
+    ap.add_argument(
+        "--kbnn-verbose",
+        action="store_true",
+        help="Enable verbose logging inside KBNN updates.",
+    )
     args = ap.parse_args()
 
     random.seed(args.seed)
@@ -340,7 +345,7 @@ def main() -> None:
         weight_prior=[mw.to(device=device) for mw in init_mws],
         no_bias=False,
         noise=0.0,
-        verbose=False,
+        verbose=args.kbnn_verbose,
         device=torch.device(device),
     )
     if args.lr != 0.0:
