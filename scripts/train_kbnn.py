@@ -232,62 +232,10 @@ def main() -> None:
             raise RuntimeError("Failed to capture action_out_proj input.")
         return catcher.last_in.squeeze(0).to(dtype=torch.float32, device=device)
 
-    # Feature stats for normalization of internal features.
-    ckpt_feature_mean = None
-    ckpt_feature_std = None
+    # Initialize KBNN weights with feature-normalized correction.
+    ckpt = None
     if args.init_from:
         ckpt = torch.load(args.init_from, map_location="cpu")
-        if "feature_mean" in ckpt and "feature_std" in ckpt:
-            ckpt_feature_mean = ckpt["feature_mean"].to(dtype=torch.float32, device=device)
-            ckpt_feature_std = ckpt["feature_std"].to(dtype=torch.float32, device=device)
-            logging.info("[kbnn] using feature stats from %s", args.init_from)
-
-    if ckpt_feature_mean is not None and ckpt_feature_std is not None:
-        feature_mean = ckpt_feature_mean
-        feature_std = ckpt_feature_std
-    else:
-        if args.feature_stats_samples > 0:
-            stats_samples = args.feature_stats_samples
-            stats_iter = (sample_training_point() for _ in range(stats_samples))
-        elif args.use_each_episode_once:
-            stats_files = files[:]
-            random.shuffle(stats_files)
-            stats_samples = len(stats_files)
-            stats_iter = (sample_training_point(ep_path) for ep_path in stats_files)
-        else:
-            stats_samples = args.steps_per_epoch
-            stats_iter = (sample_training_point() for _ in range(stats_samples))
-
-        sum_x = None
-        sum_x2 = None
-        count = 0
-        for _ in range(stats_samples):
-            obs, act_chunk = next(stats_iter)
-            feats = _sample_feature(obs, act_chunk)
-            feats = feats.reshape(-1, feats.shape[-1])
-            if sum_x is None:
-                sum_x = torch.zeros(feats.shape[-1], dtype=torch.float64, device=device)
-                sum_x2 = torch.zeros(feats.shape[-1], dtype=torch.float64, device=device)
-            sum_x += feats.double().sum(dim=0)
-            sum_x2 += (feats.double() ** 2).sum(dim=0)
-            count += feats.shape[0]
-
-        feature_mean = (sum_x / max(count, 1)).float()
-        feature_var = (sum_x2 / max(count, 1) - feature_mean.double() ** 2).clamp_min(1e-12)
-        feature_std = torch.sqrt(feature_var).float().clamp_min(1e-6)
-        logging.info(
-            "[kbnn] feature stats: count=%s mean_abs=%.6f std_mean=%.6f",
-            count,
-            float(feature_mean.abs().mean()),
-            float(feature_std.mean()),
-        )
-        logging.info(
-            "[kbnn] feature_mean[:5]=%s feature_std[:5]=%s",
-            feature_mean[:5].tolist(),
-            feature_std[:5].tolist(),
-        )
-
-    # Initialize KBNN weights with feature-normalized correction.
     geom_parts = [int(x) for x in args.geometry.split(",")] if args.geometry else []
     proj_dim = args.proj_dim
     kbnn_hidden = args.kbnn_hidden
@@ -303,7 +251,6 @@ def main() -> None:
     geom_no_bias = [proj_dim, kbnn_hidden, out_dim]
     geom_with_bias = [proj_dim + 1, kbnn_hidden, out_dim]
     if args.init_from:
-        ckpt = torch.load(args.init_from, map_location="cpu")
         if "mws" not in ckpt:
             raise ValueError(f"{args.init_from} missing 'mws' list.")
         init_mws = [w.to(dtype=torch.float32).T for w in ckpt["mws"]]
@@ -328,6 +275,59 @@ def main() -> None:
             )
     else:
         proj_matrix = torch.randn(proj_dim, flat_dim, device=device) / math.sqrt(flat_dim)
+
+    # Feature stats for normalization of projected features.
+    ckpt_feature_mean = None
+    ckpt_feature_std = None
+    if ckpt is not None:
+        if "feature_mean" in ckpt and "feature_std" in ckpt:
+            ckpt_feature_mean = ckpt["feature_mean"].to(dtype=torch.float32, device=device)
+            ckpt_feature_std = ckpt["feature_std"].to(dtype=torch.float32, device=device)
+            logging.info("[kbnn] using feature stats from %s", args.init_from)
+
+    if ckpt_feature_mean is not None and ckpt_feature_std is not None:
+        feature_mean = ckpt_feature_mean
+        feature_std = ckpt_feature_std
+    else:
+        if args.feature_stats_samples > 0:
+            stats_samples = args.feature_stats_samples
+            stats_iter = (sample_training_point() for _ in range(stats_samples))
+        elif args.use_each_episode_once:
+            stats_files = files[:]
+            random.shuffle(stats_files)
+            stats_samples = len(stats_files)
+            stats_iter = (sample_training_point(ep_path) for ep_path in stats_files)
+        else:
+            stats_samples = args.steps_per_epoch
+            stats_iter = (sample_training_point() for _ in range(stats_samples))
+
+        sum_x = torch.zeros(proj_dim, dtype=torch.float64, device=device)
+        sum_x2 = torch.zeros(proj_dim, dtype=torch.float64, device=device)
+        count = 0
+        for _ in range(stats_samples):
+            obs, act_chunk = next(stats_iter)
+            feats = _sample_feature(obs, act_chunk)
+            feats = feats.reshape(-1, feats.shape[-1])
+            x_flat = feats.reshape(-1).to(dtype=torch.float32, device=device)
+            x_proj = proj_matrix @ x_flat
+            sum_x += x_proj.double()
+            sum_x2 += (x_proj.double() ** 2)
+            count += 1
+
+        feature_mean = (sum_x / max(count, 1)).float()
+        feature_var = (sum_x2 / max(count, 1) - feature_mean.double() ** 2).clamp_min(1e-12)
+        feature_std = torch.sqrt(feature_var).float().clamp_min(1e-6)
+        logging.info(
+            "[kbnn] feature stats (proj): count=%s mean_abs=%.6f std_mean=%.6f",
+            count,
+            float(feature_mean.abs().mean()),
+            float(feature_std.mean()),
+        )
+        logging.info(
+            "[kbnn] feature_mean[:5]=%s feature_std[:5]=%s",
+            feature_mean[:5].tolist(),
+            feature_std[:5].tolist(),
+        )
 
     kbnn = KBNNOld(
         geom_no_bias,
@@ -377,16 +377,12 @@ def main() -> None:
             noise[..., 7:] = 0.0
             time = torch.rand((1,), device=device, dtype=torch.float32) * 0.999 + 0.001
             feats = _sample_feature(obs, act_chunk, noise=noise, time=time)
-            # reformat x_raw to 10240 vector
-            # multiply random initialized matrix to reduce dimension around 2k
-            # keep matrix in the checkpoint because we will need it for testing
-            # Use the 2k vector as the new input
-            # Output as a 320 vector
             x_raw = feats.to(dtype=torch.float32, device=device)
             if (global_step + 1) % 100 == 0:
                 print(f"[kbnn] x_raw shape: {tuple(x_raw.shape)}")
             x_flat = x_raw.reshape(-1)
             x_proj = (proj_matrix @ x_flat).to(dtype=torch.float32, device=kbnn.device)
+            x_proj = (x_proj - feature_mean) / feature_std
             x = x_proj.unsqueeze(0)
             base_out = model.action_out_proj(x_raw).detach()
             target = (noise - actions_t).squeeze(0).to(dtype=torch.float32, device=kbnn.device)
