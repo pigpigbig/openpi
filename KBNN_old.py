@@ -227,6 +227,11 @@ class KBNN():
                 self.mw[i] = self.mw[i] + torch.t(L_up * torch.outer(da, torch.ones((ni), device=self.device)))
 
                 E = L_up * torch.outer(Da, torch.ones((ni), device=self.device))
+                if self.verbose:
+                    print(
+                        f"[kbnn] L_up shape={tuple(L_up.shape)} ni={ni} "
+                        f"E shape={tuple(E.shape)}"
+                    )
                 F = L_up.unsqueeze(-1) @ torch.ones((1, ni), device=self.device)
                 self.Cw[i] = self.Cw[i] + E.unsqueeze(1).repeat(1, ni, 1) * F
 

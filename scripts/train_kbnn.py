@@ -132,6 +132,11 @@ def main() -> None:
     )
     ap.add_argument("--save-every", type=int, default=500, help="Save a KBNN checkpoint every N steps")
     ap.add_argument(
+        "--save-initial",
+        action="store_true",
+        help="Save an initial checkpoint (proj_matrix + feature stats + zero KBNN) before training and exit.",
+    )
+    ap.add_argument(
         "--use-each-episode-once",
         action="store_true",
         help="If set, each epoch will use each episode file once (one random timestep per episode).",
@@ -340,6 +345,7 @@ def main() -> None:
     )
     if args.lr != 0.0:
         logging.info("[kbnn] lr=%s (unused; KBNN uses Kalman update)", args.lr)
+
     def _save_kbnn(path: str) -> None:
         torch.save(
             {
@@ -356,6 +362,11 @@ def main() -> None:
             },
             path,
         )
+
+    if args.save_initial:
+        _save_kbnn(args.output)
+        logging.info("[kbnn] saved initial checkpoint to %s", args.output)
+        return
 
     global_step = 0
     for epoch in range(args.epochs):
