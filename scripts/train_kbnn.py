@@ -446,7 +446,7 @@ def main() -> None:
             print(f"[kbnn] step {global_step + 1} mw_norms={mw_norms}")
             running += float(loss.detach().cpu())
             global_step += 1
-            if (step + 1) % 100 == 0:
+            if (step + 1) % 1 == 0:
                 print(f"epoch {epoch+1}/{args.epochs} step {step+1}/{steps} loss={running/100:.6f}")
                 running = 0.0
             if args.save_every > 0 and global_step % args.save_every == 0:
