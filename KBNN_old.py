@@ -186,7 +186,7 @@ class KBNN():
         """Train model on a sequence of training data using a Kalman filter-like update."""
         assert ds_x.size(-1) == self.layers[0], f"Input dimension mismatch."
 
-        for x, y in tqdm(zip(ds_x, ds_y), total=ds_y.size(0), disable=True):
+        for step_idx, (x, y) in enumerate(tqdm(zip(ds_x, ds_y), total=ds_y.size(0), disable=True)):
             my, Cy, ma, Ca = self.single_forward_pass(torch.unsqueeze(x, 0), training=True)
 
             my_new = y
@@ -236,6 +236,13 @@ class KBNN():
 
                 Ca_inv = 1 / (Ca[i] + 1e-9)
 
+                if step_idx == 0:
+                    print(
+                        f"[kbnn] step1 layer{i}: Cwa_zero={bool(torch.all(Cwa == 0))} "
+                        f"da_zero={bool(torch.all(da == 0))} "
+                        f"Cwa_norm={float(torch.linalg.norm(Cwa)):.6f} "
+                        f"da_norm={float(torch.linalg.norm(da)):.6f}"
+                    )
                 L_up = Cwa * torch.outer(Ca_inv, torch.ones((ni), device=self.device))
                 L_low = Cza * Ca_inv.unsqueeze(0).repeat(ni, 1)
 
