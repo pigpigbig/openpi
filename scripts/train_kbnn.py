@@ -142,6 +142,12 @@ def main() -> None:
         help="Save an initial checkpoint (proj_matrix + feature stats + zero KBNN) before training and exit.",
     )
     ap.add_argument(
+        "--residual-scale",
+        type=float,
+        default=0.1,
+        help="Scale applied to the residual target to keep KBNN updates small.",
+    )
+    ap.add_argument(
         "--use-each-episode-once",
         action="store_true",
         help="If set, each epoch will use each episode file once (one random timestep per episode).",
@@ -374,6 +380,7 @@ def main() -> None:
                 "proj_dim": proj_dim,
                 "kbnn_hidden": kbnn_hidden,
                 "kbnn_out_dim": out_dim,
+                "residual_scale": args.residual_scale,
             },
             path,
         )
@@ -413,6 +420,7 @@ def main() -> None:
             base_out = model.action_out_proj(x_raw).detach()
             target = (noise - actions_t).squeeze(0).to(dtype=torch.float32, device=kbnn.device)
             y_flat = (target - base_out).reshape(-1).to(dtype=torch.float32, device=kbnn.device)
+            y_flat = y_flat * float(args.residual_scale)
             y = y_flat.unsqueeze(0)
             if (global_step + 1) % 100 == 0:
                 logging.info(
