@@ -241,7 +241,9 @@ class KBNN():
                         f"[kbnn] step1 layer{i}: Cwa_zero={bool(torch.all(Cwa == 0))} "
                         f"da_zero={bool(torch.all(da == 0))} "
                         f"Cwa_norm={float(torch.linalg.norm(Cwa)):.6f} "
-                        f"da_norm={float(torch.linalg.norm(da)):.6f}"
+                        f"da_norm={float(torch.linalg.norm(da)):.6f} "
+                        f"k_norm={float(torch.linalg.norm(k)):.6f} "
+                        f"my_new_norm={float(torch.linalg.norm(my_new)):.6f}"
                     )
                 L_up = Cwa * torch.outer(Ca_inv, torch.ones((ni), device=self.device))
                 L_low = Cza * Ca_inv.unsqueeze(0).repeat(ni, 1)
