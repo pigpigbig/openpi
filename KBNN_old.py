@@ -24,12 +24,26 @@ class KBNN():
     This class implements a Bayesian neural network where the weights are updated
     using a Kalman filter-like approach.
     """
-    def __init__(self, layers, act_fun, input_scaler=None, output_scaler=None, verbose=True, noise=0.01, normalise=False, no_bias=False, weight_prior = None, device=None):
+    def __init__(
+        self,
+        layers,
+        act_fun,
+        input_scaler=None,
+        output_scaler=None,
+        verbose=True,
+        noise=0.01,
+        normalise=False,
+        no_bias=False,
+        weight_prior=None,
+        device=None,
+        init_cov=1.0,
+    ):
         # Initialize network parameters.
         self.act_fun = act_fun
         self.layers = layers
         self.n_l = len(layers)
         self.noise = noise
+        self.init_cov = init_cov
         self.alpha, self.beta = [0, 1]
         self.normalise = normalise
         self.input_scaler = input_scaler
@@ -77,7 +91,7 @@ class KBNN():
 
             Cw[i] = torch.zeros((no, ni, ni), device=self.device)
             for j in range(no):
-                Cw[i][j] = torch.diag(torch.ones(ni, device=self.device))
+                Cw[i][j] = torch.diag(torch.ones(ni, device=self.device) * self.init_cov)
 
         return mw, Cw
     

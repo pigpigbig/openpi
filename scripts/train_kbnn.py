@@ -142,6 +142,12 @@ def main() -> None:
         help="Save an initial checkpoint (proj_matrix + feature stats + zero KBNN) before training and exit.",
     )
     ap.add_argument(
+        "--init-cov",
+        type=float,
+        default=1.0,
+        help="Initial diagonal covariance for KBNN weights.",
+    )
+    ap.add_argument(
         "--residual-scale",
         type=float,
         default=0.1,
@@ -363,6 +369,7 @@ def main() -> None:
         noise=0.0,
         verbose=args.kbnn_verbose,
         device=torch.device(device),
+        init_cov=args.init_cov,
     )
     if args.lr != 0.0:
         logging.info("[kbnn] lr=%s (unused; KBNN uses Kalman update)", args.lr)
