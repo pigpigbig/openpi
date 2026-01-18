@@ -427,6 +427,8 @@ def main() -> None:
             pred, _, _, _ = kbnn.single_forward_pass(x, training=False)
             loss = torch.mean((pred - y) ** 2)
             kbnn.train(x, y)
+            mw_norms = [float(torch.linalg.norm(w).detach().cpu()) for w in kbnn.mw]
+            print(f"[kbnn] step {global_step + 1} mw_norms={mw_norms}")
             running += float(loss.detach().cpu())
             global_step += 1
             if (step + 1) % 100 == 0:
