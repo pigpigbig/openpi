@@ -440,6 +440,8 @@ def main() -> None:
                     float(y.std(unbiased=False)),
                 )
             pred, _, _, _ = kbnn.single_forward_pass(x, training=False)
+            if step == 0:
+                print(f"[kbnn] pred_norm={pred.norm().item():.6f} y_norm={y.norm().item():.6f} loss={loss.item():.6f}")
             loss = torch.mean((pred - y) ** 2)
             if (step + 1) % 1 == 0:
                 print(f"epoch {epoch+1}/{args.epochs} step {step+1}/{steps} loss={running/100:.6f}")
