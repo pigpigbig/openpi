@@ -154,6 +154,11 @@ def main() -> None:
         help="Scale applied to the residual target to keep KBNN updates small.",
     )
     ap.add_argument(
+        "--normalize-target",
+        action="store_true",
+        help="Normalize the residual target with mean/std computed from the dataset.",
+    )
+    ap.add_argument(
         "--use-each-episode-once",
         action="store_true",
         help="If set, each epoch will use each episode file once (one random timestep per episode).",
@@ -303,6 +308,18 @@ def main() -> None:
     else:
         proj_matrix = torch.randn(proj_dim, flat_dim, device=device) / math.sqrt(flat_dim)
 
+    def _stats_iter():
+        if args.feature_stats_samples > 0:
+            stats_samples = args.feature_stats_samples
+            return stats_samples, (sample_training_point() for _ in range(stats_samples))
+        if args.use_each_episode_once:
+            stats_files = files[:]
+            random.shuffle(stats_files)
+            stats_samples = len(stats_files)
+            return stats_samples, (sample_training_point(ep_path) for ep_path in stats_files)
+        stats_samples = args.steps_per_epoch
+        return stats_samples, (sample_training_point() for _ in range(stats_samples))
+
     # Feature stats for normalization of projected features.
     if args.no_feature_normalization:
         feature_mean = torch.zeros(proj_dim, dtype=torch.float32, device=device)
@@ -321,17 +338,7 @@ def main() -> None:
             feature_mean = ckpt_feature_mean
             feature_std = ckpt_feature_std
         else:
-            if args.feature_stats_samples > 0:
-                stats_samples = args.feature_stats_samples
-                stats_iter = (sample_training_point() for _ in range(stats_samples))
-            elif args.use_each_episode_once:
-                stats_files = files[:]
-                random.shuffle(stats_files)
-                stats_samples = len(stats_files)
-                stats_iter = (sample_training_point(ep_path) for ep_path in stats_files)
-            else:
-                stats_samples = args.steps_per_epoch
-                stats_iter = (sample_training_point() for _ in range(stats_samples))
+            stats_samples, stats_iter = _stats_iter()
 
             sum_x = torch.zeros(proj_dim, dtype=torch.float64, device=device)
             sum_x2 = torch.zeros(proj_dim, dtype=torch.float64, device=device)
@@ -361,6 +368,50 @@ def main() -> None:
                 feature_std[:5].tolist(),
             )
 
+    # Target stats for normalization of residual targets.
+    if args.normalize_target:
+        ckpt_target_mean = None
+        ckpt_target_std = None
+        if ckpt is not None:
+            if "target_mean" in ckpt and "target_std" in ckpt:
+                ckpt_target_mean = ckpt["target_mean"].to(dtype=torch.float32, device=device)
+                ckpt_target_std = ckpt["target_std"].to(dtype=torch.float32, device=device)
+                logging.info("[kbnn] using target stats from %s", args.init_from)
+        if ckpt_target_mean is not None and ckpt_target_std is not None:
+            target_mean = ckpt_target_mean
+            target_std = ckpt_target_std
+        else:
+            stats_samples, stats_iter = _stats_iter()
+            sum_y = torch.zeros(out_dim, dtype=torch.float64, device=device)
+            sum_y2 = torch.zeros(out_dim, dtype=torch.float64, device=device)
+            count = 0
+            for _ in range(stats_samples):
+                obs, act_chunk = next(stats_iter)
+                actions_t = torch.from_numpy(act_chunk)[None, ...].to(device, dtype=torch.float32)
+                noise = torch.randn_like(actions_t)
+                noise[..., 7:] = 0.0
+                time = torch.rand((1,), device=device, dtype=torch.float32) * 0.999 + 0.001
+                feats = _sample_feature(obs, act_chunk, noise=noise, time=time)
+                x_raw = feats.to(dtype=torch.float32, device=device)
+                base_out = model.action_out_proj(x_raw).detach()
+                target = (noise - actions_t).squeeze(0).to(dtype=torch.float32, device=device)
+                y_flat = (target - base_out).reshape(-1)
+                sum_y += y_flat.double()
+                sum_y2 += (y_flat.double() ** 2)
+                count += 1
+            target_mean = (sum_y / max(count, 1)).float()
+            target_var = (sum_y2 / max(count, 1) - target_mean.double() ** 2).clamp_min(1e-12)
+            target_std = torch.sqrt(target_var).float().clamp_min(1e-6)
+            logging.info(
+                "[kbnn] target stats: count=%s mean_abs=%.6f std_mean=%.6f",
+                count,
+                float(target_mean.abs().mean()),
+                float(target_std.mean()),
+            )
+    else:
+        target_mean = torch.zeros(out_dim, dtype=torch.float32, device=device)
+        target_std = torch.ones(out_dim, dtype=torch.float32, device=device)
+
     kbnn = KBNNOld(
         geom_no_bias,
         act_fun=["relu", "relu", "linear"],
@@ -388,6 +439,8 @@ def main() -> None:
                 "kbnn_hidden": kbnn_hidden,
                 "kbnn_out_dim": out_dim,
                 "residual_scale": args.residual_scale,
+                "target_mean": target_mean.detach().cpu(),
+                "target_std": target_std.detach().cpu(),
             },
             path,
         )
@@ -427,6 +480,8 @@ def main() -> None:
             base_out = model.action_out_proj(x_raw).detach()
             target = (noise - actions_t).squeeze(0).to(dtype=torch.float32, device=kbnn.device)
             y_flat = (target - base_out).reshape(-1).to(dtype=torch.float32, device=kbnn.device)
+            if args.normalize_target:
+                y_flat = (y_flat - target_mean) / target_std
             y_flat = y_flat * float(args.residual_scale)
             y = y_flat.unsqueeze(0)
             if (global_step + 1) % 100 == 0:

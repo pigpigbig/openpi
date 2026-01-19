@@ -25,6 +25,9 @@ class KBNNActionHead(torch.nn.Module):
         mws: list[torch.Tensor],
         feature_mean: torch.Tensor | None = None,
         feature_std: torch.Tensor | None = None,
+        target_mean: torch.Tensor | None = None,
+        target_std: torch.Tensor | None = None,
+        residual_scale: float | None = None,
         proj_matrix: torch.Tensor | None = None,
         horizon: int | None = None,
         feature_dim: int = 1024,
@@ -41,6 +44,16 @@ class KBNNActionHead(torch.nn.Module):
             self.register_buffer("proj_matrix", proj_matrix.clone().detach())
         else:
             self.proj_matrix = None
+        if target_mean is not None and target_std is not None:
+            self.register_buffer("target_mean", target_mean.clone().detach())
+            self.register_buffer("target_std", target_std.clone().detach())
+        else:
+            self.target_mean = None
+            self.target_std = None
+        if residual_scale is not None:
+            self.register_buffer("residual_scale", torch.tensor(float(residual_scale), dtype=torch.float32))
+        else:
+            self.residual_scale = None
         self.horizon = horizon
         self.feature_dim = feature_dim
 
@@ -72,6 +85,11 @@ class KBNNActionHead(torch.nn.Module):
             if layer_idx != len(self.mws) - 1:
                 hidden = torch.relu(hidden)
 
+        if self.residual_scale is not None and float(self.residual_scale) != 0.0:
+            hidden = hidden / self.residual_scale
+        if self.target_mean is not None and self.target_std is not None:
+            hidden = hidden * self.target_std + self.target_mean
+
         if len(orig_shape) == 3 or (len(orig_shape) == 2 and self.proj_matrix is not None):
             return hidden.reshape(batch_size, horizon, -1)
         return hidden
@@ -94,6 +112,9 @@ def _load_kbnn_mws(kbnn_checkpoint: str, device: str):
     mws = [w.to(dtype=torch.float32, device=device) for w in ckpt["mws"]]
     feature_mean = ckpt.get("feature_mean")
     feature_std = ckpt.get("feature_std")
+    target_mean = ckpt.get("target_mean")
+    target_std = ckpt.get("target_std")
+    residual_scale = ckpt.get("residual_scale", 1.0)
     proj_matrix = ckpt.get("proj_matrix")
     if feature_mean is not None and feature_std is not None:
         feature_mean = feature_mean.to(dtype=torch.float32, device=device)
@@ -101,9 +122,15 @@ def _load_kbnn_mws(kbnn_checkpoint: str, device: str):
     else:
         feature_mean = None
         feature_std = None
+    if target_mean is not None and target_std is not None:
+        target_mean = target_mean.to(dtype=torch.float32, device=device)
+        target_std = target_std.to(dtype=torch.float32, device=device)
+    else:
+        target_mean = None
+        target_std = None
     if proj_matrix is not None:
         proj_matrix = proj_matrix.to(dtype=torch.float32, device=device)
-    return mws, feature_mean, feature_std, proj_matrix
+    return mws, feature_mean, feature_std, target_mean, target_std, residual_scale, proj_matrix
 
 
 @dataclasses.dataclass
@@ -178,11 +205,21 @@ def main(args: Args) -> None:
     use_kbnn = (not args.disable_kbnn) and (args.kbnn_checkpoint is not None)
     if use_kbnn:
         device = policy._pytorch_device  # noqa: SLF001
-        mws, feature_mean, feature_std, proj_matrix = _load_kbnn_mws(args.kbnn_checkpoint, device=device)
+        mws, feature_mean, feature_std, target_mean, target_std, residual_scale, proj_matrix = _load_kbnn_mws(
+            args.kbnn_checkpoint,
+            device=device,
+        )
+        if target_mean is None or target_std is None:
+            logging.warning(
+                "KBNN checkpoint missing target_mean/target_std; residual unnormalization is disabled."
+            )
         kbnn_head = KBNNActionHead(
             mws,
             feature_mean=feature_mean,
             feature_std=feature_std,
+            target_mean=target_mean,
+            target_std=target_std,
+            residual_scale=residual_scale,
             proj_matrix=proj_matrix,
             horizon=int(getattr(train_config.model, "action_horizon", 10)),
         ).to(device)
