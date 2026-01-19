@@ -507,7 +507,9 @@ def main() -> None:
                 print(f"epoch {epoch+1}/{args.epochs} step {step+1}/{steps} loss={running:.6f}")
                 running = 0.0
             if step == 0:
-                print(f"[kbnn] x={x[0][:10].detach().cpu().tolist()} y={y[0][:10].detach().cpu().tolist()}")
+                x_vals = [f"{v:.6f}" for v in x[0][:10].detach().cpu().tolist()]
+                y_vals = [f"{v:.6f}" for v in y[0][:10].detach().cpu().tolist()]
+                print(f"[kbnn] x[0][:10]={x_vals} y[0][:10]={y_vals}")
             kbnn.train(x, y)
             mw_norms = [float(torch.linalg.norm(w).detach().cpu()) for w in kbnn.mw]
             # print(f"[kbnn] step {global_step + 1} mw_norms={mw_norms}")
