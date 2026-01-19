@@ -150,7 +150,7 @@ def main() -> None:
     ap.add_argument(
         "--residual-scale",
         type=float,
-        default=0.1,
+        default=1.0,
         help="Scale applied to the residual target to keep KBNN updates small.",
     )
     ap.add_argument(
@@ -506,6 +506,8 @@ def main() -> None:
             if (step + 1) % 1 == 0:
                 print(f"epoch {epoch+1}/{args.epochs} step {step+1}/{steps} loss={running:.6f}")
                 running = 0.0
+            if step == 0:
+                print(f"[kbnn] x={x[0][:10].detach().cpu().tolist()} y={y[0][:10].detach().cpu().tolist()}")
             kbnn.train(x, y)
             mw_norms = [float(torch.linalg.norm(w).detach().cpu()) for w in kbnn.mw]
             # print(f"[kbnn] step {global_step + 1} mw_norms={mw_norms}")
