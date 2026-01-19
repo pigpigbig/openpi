@@ -443,13 +443,13 @@ def main() -> None:
             if step == 0:
                 print(f"[kbnn] noise_norm={float(torch.linalg.norm(noise).detach().cpu()):.6f} actions_t_norm={float(torch.linalg.norm(actions_t).detach().cpu()):.6f} target_norm={float(torch.linalg.norm(target).detach().cpu()):.6f} base_out_norm={float(torch.linalg.norm(base_out).detach().cpu()):.6f} pred_norm={float(torch.linalg.norm(pred).detach().cpu()):.6f} y_flat_norm={float(torch.linalg.norm(y_flat).detach().cpu()):.6f}")
             loss = torch.mean((pred - y) ** 2)
+            running += float(loss.detach().cpu())
             if (step + 1) % 1 == 0:
                 print(f"epoch {epoch+1}/{args.epochs} step {step+1}/{steps} loss={running/100:.6f}")
                 running = 0.0
             kbnn.train(x, y)
             mw_norms = [float(torch.linalg.norm(w).detach().cpu()) for w in kbnn.mw]
             # print(f"[kbnn] step {global_step + 1} mw_norms={mw_norms}")
-            running += float(loss.detach().cpu())
             global_step += 1
             if args.save_every > 0 and global_step % args.save_every == 0:
                 save_path = f"{Path(args.output).with_suffix('')}_step{global_step}.pt"
