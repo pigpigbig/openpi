@@ -441,7 +441,7 @@ def main() -> None:
                 )
             pred, _, _, _ = kbnn.single_forward_pass(x, training=False)
             if step == 0:
-                print(f"[kbnn] noise_norm={float(torch.linalg.norm(noise).detach().cpu()):.6f} actions_t_norm={float(torch.linalg.norm(actions_t).detach().cpu()):.6f} target_norm={float(torch.linalg.norm(target).detach().cpu()):.6f} base_out_norm={float(torch.linalg.norm(base_out).detach().cpu()):.6f}")
+                print(f"[kbnn] noise_norm={float(torch.linalg.norm(noise).detach().cpu()):.6f} actions_t_norm={float(torch.linalg.norm(actions_t).detach().cpu()):.6f} target_norm={float(torch.linalg.norm(target).detach().cpu()):.6f} base_out_norm={float(torch.linalg.norm(base_out).detach().cpu()):.6f} pred_norm={float(torch.linalg.norm(pred).detach().cpu()):.6f} y_flat_norm={float(torch.linalg.norm(y_flat).detach().cpu()):.6f}")
             loss = torch.mean((pred - y) ** 2)
             if (step + 1) % 1 == 0:
                 print(f"epoch {epoch+1}/{args.epochs} step {step+1}/{steps} loss={running/100:.6f}")
