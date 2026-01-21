@@ -23,6 +23,7 @@ class MLPActionHead(torch.nn.Module):
         target_mean: torch.Tensor | None,
         target_std: torch.Tensor | None,
         residual_scale: float,
+        mlp_scale: float,
         horizon: int,
     ):
         super().__init__()
@@ -31,12 +32,13 @@ class MLPActionHead(torch.nn.Module):
         self.register_buffer("feature_mean", feature_mean.clone().detach())
         self.register_buffer("feature_std", feature_std.clone().detach())
         if target_mean is not None and target_std is not None:
-            self.register_buffer("target_mean", target_mean.clone().detach())
-            self.register_buffer("target_std", target_std.clone().detach())
+            self.register_buffer("target_mean_buf", target_mean.clone().detach())
+            self.register_buffer("target_std_buf", target_std.clone().detach())
         else:
-            self.target_mean = None
-            self.target_std = None
+            self.target_mean_buf = None
+            self.target_std_buf = None
         self.register_buffer("residual_scale", torch.tensor(float(residual_scale), dtype=torch.float32))
+        self.register_buffer("mlp_scale", torch.tensor(float(mlp_scale), dtype=torch.float32))
         self.horizon = horizon
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -50,8 +52,10 @@ class MLPActionHead(torch.nn.Module):
         hidden = self.mlp(proj)
         if float(self.residual_scale) != 0.0:
             hidden = hidden / self.residual_scale
-        if self.target_mean is not None and self.target_std is not None:
-            hidden = hidden * self.target_std + self.target_mean
+        if self.target_mean_buf is not None and self.target_std_buf is not None:
+            hidden = hidden * self.target_std_buf + self.target_mean_buf
+        if float(self.mlp_scale) != 1.0:
+            hidden = hidden * self.mlp_scale
         return hidden.reshape(batch_size, horizon, -1)
 
 
@@ -100,6 +104,7 @@ class Args:
     mlp_checkpoint: str | None = None
     disable_mlp: bool = False
     record: bool = False
+    mlp_scale: float = 1.0
     policy: Checkpoint = dataclasses.field(default_factory=lambda: Checkpoint(config="pi05_libero", dir=""))
 
 
@@ -154,6 +159,7 @@ def main(args: Args) -> None:
             target_mean=target_mean,
             target_std=target_std,
             residual_scale=float(residual_scale),
+            mlp_scale=float(args.mlp_scale),
             horizon=int(ckpt["horizon"]),
         ).to(device)
 
