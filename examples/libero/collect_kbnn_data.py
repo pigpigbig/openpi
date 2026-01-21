@@ -10,7 +10,7 @@ import dataclasses
 import logging
 import math
 import pathlib
-from typing import Optional
+from typing import List, Optional
 
 import imageio
 import numpy as np
@@ -35,6 +35,7 @@ class Args:
     # Data collection targets
     task_suite_name: str = "libero_10"  # use libero_10 to enumerate 10 envs
     train_envs: int = 8  # first N envs for training; remaining are held out
+    env_ids: Optional[List[int]] = None  # explicit env ids to collect (overrides train_envs)
     successes_per_env: int = 200
     num_steps_wait: int = 10
     max_steps: int = 400  # safety cap per episode (incl. wait steps)
@@ -183,8 +184,13 @@ def collect(args: Args) -> None:
     out_root = pathlib.Path(args.output_dir)
     out_root.mkdir(parents=True, exist_ok=True)
 
-    # Train envs: first N; others implicitly held out
-    env_ids = list(range(min(args.train_envs, num_tasks_in_suite)))
+    # Train envs: explicit list overrides first-N behavior
+    if args.env_ids:
+        env_ids = [eid for eid in args.env_ids if 0 <= eid < num_tasks_in_suite]
+        if not env_ids:
+            raise ValueError(f"No valid env_ids provided (0..{num_tasks_in_suite - 1}).")
+    else:
+        env_ids = list(range(min(args.train_envs, num_tasks_in_suite)))
 
     total_success = 0
     for env_id in env_ids:
