@@ -30,11 +30,12 @@ class MLPActionHead(torch.nn.Module):
         self.register_buffer("proj_matrix", proj_matrix.clone().detach())
         self.register_buffer("feature_mean", feature_mean.clone().detach())
         self.register_buffer("feature_std", feature_std.clone().detach())
-        self.target_mean = None
-        self.target_std = None
         if target_mean is not None and target_std is not None:
             self.register_buffer("target_mean", target_mean.clone().detach())
             self.register_buffer("target_std", target_std.clone().detach())
+        else:
+            self.target_mean = None
+            self.target_std = None
         self.register_buffer("residual_scale", torch.tensor(float(residual_scale), dtype=torch.float32))
         self.horizon = horizon
 
