@@ -60,13 +60,40 @@ class MLPActionHead(torch.nn.Module):
 
 
 class ResidualActionHead(torch.nn.Module):
-    def __init__(self, base_head: torch.nn.Module, mlp_head: MLPActionHead):
+    def __init__(self, base_head: torch.nn.Module, mlp_head: MLPActionHead, debug_every: int = 0):
         super().__init__()
         self.base_head = base_head
         self.mlp_head = mlp_head
+        self._debug_every = max(0, int(debug_every))
+        self._debug_step = 0
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.base_head(x) + self.mlp_head(x)
+        base = self.base_head(x)
+        residual = self.mlp_head(x)
+        out = base + residual
+        if self._debug_every > 0:
+            self._debug_step += 1
+            if self._debug_step % self._debug_every == 0:
+                with torch.no_grad():
+                    base_norm = float(torch.linalg.norm(base))
+                    residual_norm = float(torch.linalg.norm(residual))
+                    out_norm = float(torch.linalg.norm(out))
+                    if base.ndim == 3:
+                        out_7 = out[0, :, :7]
+                    else:
+                        out_7 = out[:1, :7]
+                    z_mean = float(out_7[..., 2].mean())
+                    grip_mean = float(out_7[..., 6].mean())
+                    logging.info(
+                        "[mlp_debug] step=%d base_norm=%.6f residual_norm=%.6f out_norm=%.6f z_mean=%.6f grip_mean=%.6f",
+                        self._debug_step,
+                        base_norm,
+                        residual_norm,
+                        out_norm,
+                        z_mean,
+                        grip_mean,
+                    )
+        return out
 
 
 def _load_mlp_checkpoint(path: str, device: str):
@@ -105,6 +132,8 @@ class Args:
     disable_mlp: bool = False
     record: bool = False
     mlp_scale: float = 1.0
+    # Log residual/base norms every N forwards (0 disables).
+    debug_every: int = 0
     policy: Checkpoint = dataclasses.field(default_factory=lambda: Checkpoint(config="pi05_libero", dir=""))
 
 
@@ -166,7 +195,11 @@ def main(args: Args) -> None:
         model = policy._model  # noqa: SLF001
         if not hasattr(model, "action_out_proj"):
             raise AttributeError("Loaded policy model does not have `action_out_proj`.")
-        model.action_out_proj = ResidualActionHead(model.action_out_proj, mlp_head).to(device)
+        model.action_out_proj = ResidualActionHead(
+            model.action_out_proj,
+            mlp_head,
+            debug_every=args.debug_every,
+        ).to(device)
         logging.info("Attached MLP residual head from %s", args.mlp_checkpoint)
     else:
         logging.info("Serving baseline pi05 (no MLP).")

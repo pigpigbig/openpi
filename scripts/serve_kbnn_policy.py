@@ -96,13 +96,44 @@ class KBNNActionHead(torch.nn.Module):
 
 
 class ResidualActionHead(torch.nn.Module):
-    def __init__(self, base_head: torch.nn.Module, kbnn_head: KBNNActionHead):
+    def __init__(self, base_head: torch.nn.Module, kbnn_head: KBNNActionHead, debug_every: int = 0):
         super().__init__()
         self.base_head = base_head
         self.kbnn_head = kbnn_head
+        self._debug_every = max(0, int(debug_every))
+        self._debug_step = 0
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.base_head(x) + self.kbnn_head(x)
+        base = self.base_head(x)
+        residual = self.kbnn_head(x)
+        out = base + residual
+        if self._debug_every > 0:
+            self._debug_step += 1
+            if self._debug_step % self._debug_every == 0:
+                with torch.no_grad():
+                    base_norm = float(torch.linalg.norm(base))
+                    residual_norm = float(torch.linalg.norm(residual))
+                    out_norm = float(torch.linalg.norm(out))
+                    if base.ndim == 3:
+                        base_7 = base[0, :, :7]
+                        residual_7 = residual[0, :, :7]
+                        out_7 = out[0, :, :7]
+                    else:
+                        base_7 = base[:1, :7]
+                        residual_7 = residual[:1, :7]
+                        out_7 = out[:1, :7]
+                    z_mean = float(out_7[..., 2].mean())
+                    grip_mean = float(out_7[..., 6].mean())
+                    logging.info(
+                        "[kbnn_debug] step=%d base_norm=%.6f residual_norm=%.6f out_norm=%.6f z_mean=%.6f grip_mean=%.6f",
+                        self._debug_step,
+                        base_norm,
+                        residual_norm,
+                        out_norm,
+                        z_mean,
+                        grip_mean,
+                    )
+        return out
 
 
 def _load_kbnn_mws(kbnn_checkpoint: str, device: str):
@@ -170,6 +201,9 @@ class Args:
     # Record the policy's behavior for debugging.
     record: bool = False
 
+    # Log residual/base norms every N forwards (0 disables).
+    debug_every: int = 0
+
     # Which policy checkpoint to load.
     policy: Checkpoint = dataclasses.field(default_factory=lambda: Checkpoint(config="pi05_libero", dir=""))
 
@@ -228,7 +262,11 @@ def main(args: Args) -> None:
         model = policy._model  # noqa: SLF001
         if not hasattr(model, "action_out_proj"):
             raise AttributeError("Loaded policy model does not have `action_out_proj`; cannot attach KBNN head.")
-        model.action_out_proj = ResidualActionHead(model.action_out_proj, kbnn_head).to(device)
+        model.action_out_proj = ResidualActionHead(
+            model.action_out_proj,
+            kbnn_head,
+            debug_every=args.debug_every,
+        ).to(device)
         logging.info("Attached KBNN action head from %s", args.kbnn_checkpoint)
     else:
         logging.info("Serving baseline pi05 (no KBNN).")
