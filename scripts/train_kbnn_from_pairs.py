@@ -69,6 +69,7 @@ def main() -> None:
     ap.add_argument("--init-cov", type=float, default=1e-2)
     ap.add_argument("--kbnn-noise", type=float, default=0.0, help="Noise term inside KBNN forward pass")
     ap.add_argument("--kbnn-normalise", action="store_true", help="Enable KBNN normalization (scales ma/Ca)")
+    ap.add_argument("--kbnn-hidden", type=int, default=2048, help="Hidden dimension for KBNN")
     ap.add_argument("--shuffle", action="store_true", help="Shuffle samples within each shard")
     ap.add_argument("--log-every", type=int, default=100)
     ap.add_argument("--save-every", type=int, default=0, help="Save checkpoint every N steps (0 disables)")
@@ -86,6 +87,13 @@ def main() -> None:
     proj_dim = int(meta["proj_dim"])
     out_dim = int(meta["out_dim"])
     kbnn_hidden = int(meta.get("kbnn_hidden", 64))
+    if args.kbnn_hidden != kbnn_hidden:
+        logging.info(
+            "[kbnn_pairs] overriding kbnn_hidden from meta (%d) to %d",
+            kbnn_hidden,
+            args.kbnn_hidden,
+        )
+        kbnn_hidden = args.kbnn_hidden
 
     kbnn = KBNNOld(
         [proj_dim, kbnn_hidden, out_dim],
