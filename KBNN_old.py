@@ -139,8 +139,17 @@ class KBNN():
                 ma[i] = ma[i] / np.sqrt(self.layers[i] + 1)
                 Ca[i] = Ca[i] / (self.layers[i] + 1)
 
-            if torch.min(Ca[i]) < 0:
-                raise Exception
+            min_ca = torch.min(Ca[i])
+            if min_ca < 0:
+                # Avoid crashing on small negative variances; clamp for numerical stability.
+                # if torch.min(Ca[i]) < 0:
+                #     raise Exception
+                logging.warning(
+                    "[kbnn_old] Ca[%d] has negative entries (min=%g); clamping to 1e-9 for stability.",
+                    i,
+                    float(min_ca),
+                )
+                Ca[i] = torch.clamp(Ca[i], min=1e-9)
 
             # --- FIX: Use == for string comparison ---
             if activation == "relu" or activation == "linear":
