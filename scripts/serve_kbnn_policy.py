@@ -28,6 +28,7 @@ class KBNNActionHead(torch.nn.Module):
         target_mean: torch.Tensor | None = None,
         target_std: torch.Tensor | None = None,
         residual_scale: float | None = None,
+        kbnn_scale: float = 1.0,
         proj_matrix: torch.Tensor | None = None,
         horizon: int | None = None,
         feature_dim: int = 1024,
@@ -54,6 +55,7 @@ class KBNNActionHead(torch.nn.Module):
             self.register_buffer("residual_scale", torch.tensor(float(residual_scale), dtype=torch.float32))
         else:
             self.residual_scale = None
+        self.register_buffer("kbnn_scale", torch.tensor(float(kbnn_scale), dtype=torch.float32))
         self.horizon = horizon
         self.feature_dim = feature_dim
 
@@ -89,6 +91,8 @@ class KBNNActionHead(torch.nn.Module):
             hidden = hidden / self.residual_scale
         if self.target_mean is not None and self.target_std is not None:
             hidden = hidden * self.target_std + self.target_mean
+        if float(self.kbnn_scale) != 1.0:
+            hidden = hidden * self.kbnn_scale
 
         if len(orig_shape) == 3 or (len(orig_shape) == 2 and self.proj_matrix is not None):
             return hidden.reshape(batch_size, horizon, -1)
@@ -198,6 +202,9 @@ class Args:
     # Disable KBNN even if `kbnn_checkpoint` is provided.
     disable_kbnn: bool = False
 
+    # Scale residual at inference time (post-unnormalization).
+    kbnn_scale: float = 1.0
+
     # Record the policy's behavior for debugging.
     record: bool = False
 
@@ -254,6 +261,7 @@ def main(args: Args) -> None:
             target_mean=target_mean,
             target_std=target_std,
             residual_scale=residual_scale,
+            kbnn_scale=args.kbnn_scale,
             proj_matrix=proj_matrix,
             horizon=int(getattr(train_config.model, "action_horizon", 10)),
         ).to(device)
