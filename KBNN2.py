@@ -236,7 +236,7 @@ class KBNN:
     def relu_gaussian_moments_with_cross(
         mu: torch.Tensor,        # (n,)
         Sigma: torch.Tensor,     # (n, n)
-        eps: float = 1e-12,
+        eps: float = 1e-8,
         symmetrize: bool = True
     ):
         """

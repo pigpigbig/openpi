@@ -71,6 +71,7 @@ def main() -> None:
     ap.add_argument("--shuffle", action="store_true", help="Shuffle samples within each shard")
     ap.add_argument("--log-every", type=int, default=100)
     ap.add_argument("--save-every", type=int, default=0, help="Save checkpoint every N steps (0 disables)")
+    ap.add_argument("--explode-norm", type=float, default=1e6, help="Stop and log if any weight norm exceeds this")
     ap.add_argument("--output", default="kbnn_from_pairs.pt")
     ap.add_argument("--device", default="cuda")
     args = ap.parse_args()
@@ -110,6 +111,7 @@ def main() -> None:
     shards = _load_shards(args.dataset_dir)
 
     global_step = 0
+    explode = False
     for epoch in range(args.epochs):
         running = 0.0
         count = 0
@@ -131,6 +133,23 @@ def main() -> None:
                 pred = cache["mus"][-1]
                 loss = torch.mean((pred - yi) ** 2)
                 kbnn.backward(yi)
+                mw_norms = [float(torch.linalg.norm(w).detach().cpu()) for w in kbnn.mws]
+                max_mw_norm = max(mw_norms) if mw_norms else 0.0
+                if not torch.isfinite(loss) or max_mw_norm > args.explode_norm:
+                    logging.warning(
+                        "[kbnn_pairs] explosion detected: epoch=%d step=%d shard=%s idx=%d loss=%s max_mw_norm=%.6e",
+                        epoch + 1,
+                        global_step + 1,
+                        Path(shard).name,
+                        i,
+                        float(loss.detach().cpu()) if torch.isfinite(loss) else "nan/inf",
+                        max_mw_norm,
+                    )
+                    explode_path = f"{Path(args.output).with_suffix('')}_explode_step{global_step + 1}.pt"
+                    _save_kbnn(explode_path, kbnn, meta, proj_dim, kbnn_hidden, out_dim)
+                    logging.warning("[kbnn_pairs] saved %s", explode_path)
+                    explode = True
+                    break
                 running += float(loss.detach().cpu())
                 count += 1
                 global_step += 1
@@ -147,6 +166,10 @@ def main() -> None:
                     save_path = f"{Path(args.output).with_suffix('')}_step{global_step}.pt"
                     _save_kbnn(save_path, kbnn, meta, proj_dim, kbnn_hidden, out_dim)
                     logging.info("[kbnn_pairs] saved %s", save_path)
+            if explode:
+                break
+        if explode:
+            break
 
         if count > 0:
             logging.info(
