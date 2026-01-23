@@ -24,7 +24,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from KBNN_old import KBNN as KBNNOld
+from KBNN2 import KBNN as KBNNFull
 
 
 def _load_shards(dataset_dir: str) -> list[str]:
@@ -36,7 +36,7 @@ def _load_shards(dataset_dir: str) -> list[str]:
 
 def _save_kbnn(
     path: str,
-    kbnn: KBNNOld,
+    kbnn: KBNNFull,
     meta: dict,
     proj_dim: int,
     kbnn_hidden: int,
@@ -47,7 +47,7 @@ def _save_kbnn(
             "geometry_with_bias": [proj_dim + 1, kbnn_hidden, out_dim],
             "kbnn_geometry": [proj_dim, kbnn_hidden, out_dim],
             "cov_mode": getattr(kbnn, "cov_mode", "full"),
-            "mws": [w.detach().cpu().T for w in kbnn.mw],
+            "mws": [w.detach().cpu() for w in kbnn.mws],
             "feature_mean": meta["feature_mean"],
             "feature_std": meta["feature_std"],
             "proj_matrix": meta["proj_matrix"],
@@ -67,8 +67,6 @@ def main() -> None:
     ap.add_argument("--dataset-dir", required=True, help="Directory with shard_*.npz + meta.pt")
     ap.add_argument("--epochs", type=int, default=1)
     ap.add_argument("--init-cov", type=float, default=1e-2)
-    ap.add_argument("--kbnn-noise", type=float, default=0.0, help="Noise term inside KBNN forward pass")
-    ap.add_argument("--kbnn-normalise", action="store_true", help="Enable KBNN normalization (scales ma/Ca)")
     ap.add_argument("--kbnn-hidden", type=int, default=2048, help="Hidden dimension for KBNN")
     ap.add_argument("--shuffle", action="store_true", help="Shuffle samples within each shard")
     ap.add_argument("--log-every", type=int, default=100)
@@ -95,15 +93,18 @@ def main() -> None:
         )
         kbnn_hidden = args.kbnn_hidden
 
-    kbnn = KBNNOld(
+    if proj_dim * kbnn_hidden * out_dim > 1_000_000:
+        logging.warning(
+            "[kbnn_pairs] KBNN2 full-covariance can be very memory heavy with proj_dim=%d, hidden=%d, out_dim=%d.",
+            proj_dim,
+            kbnn_hidden,
+            out_dim,
+        )
+
+    kbnn = KBNNFull(
         [proj_dim, kbnn_hidden, out_dim],
-        act_fun=["relu", "relu", "linear"],
-        no_bias=False,
-        noise=args.kbnn_noise,
-        normalise=args.kbnn_normalise,
-        verbose=False,
-        device=torch.device(device),
         init_cov=args.init_cov,
+        device=device,
     )
 
     shards = _load_shards(args.dataset_dir)
@@ -124,11 +125,12 @@ def main() -> None:
             y = torch.as_tensor(y_np, device=device, dtype=torch.float32)
 
             for i in range(x.shape[0]):
-                xi = x[i].unsqueeze(0)
-                yi = y[i].unsqueeze(0)
-                pred, _, _, _ = kbnn.single_forward_pass(xi, training=False)
+                xi = x[i]
+                yi = y[i]
+                cache = kbnn.forward(xi)
+                pred = cache["mus"][-1]
                 loss = torch.mean((pred - yi) ** 2)
-                kbnn.train(xi, yi)
+                kbnn.backward(yi)
                 running += float(loss.detach().cpu())
                 count += 1
                 global_step += 1
