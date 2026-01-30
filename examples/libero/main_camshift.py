@@ -217,7 +217,7 @@ def _apply_camera_shift(env, pitch_deg: float, yaw_deg: float = 0.0, fovy_deg: O
     )
 
 
-def eval_libero(args: Args) -> None:
+def eval_libero(args: Args):
     # Set random seed
     np.random.seed(args.seed)
 
@@ -382,11 +382,17 @@ def eval_libero(args: Args) -> None:
         )
         env_success_rates[task_id] = float(task_successes) / float(task_episodes)
 
-    logging.info(f"Total success rate: {float(total_successes) / float(total_episodes)}")
+    total_success_rate = float(total_successes) / float(total_episodes) if total_episodes else 0.0
+    logging.info(f"Total success rate: {total_success_rate}")
     logging.info(f"Total episodes: {total_episodes}")
     logging.info("[camshift] Per-env success rates:")
     for env_id in sorted(env_success_rates):
         logging.info(f"[camshift] Env {env_id} success rate: {env_success_rates[env_id]:.3f}")
+    return {
+        "total_success_rate": total_success_rate,
+        "total_episodes": total_episodes,
+        "env_success_rates": env_success_rates,
+    }
 
 
 def _get_libero_env(
