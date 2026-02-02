@@ -28,7 +28,16 @@ def main() -> None:
     handlers = [logging.StreamHandler()]
     if args.log_file:
         pathlib.Path(args.log_file).parent.mkdir(parents=True, exist_ok=True)
-        handlers.append(logging.FileHandler(args.log_file))
+        file_handler = logging.FileHandler(args.log_file)
+        file_handler.setLevel(logging.INFO)
+
+        class _SummaryFilter(logging.Filter):
+            def filter(self, record: logging.LogRecord) -> bool:
+                msg = record.getMessage()
+                return msg.startswith("[camshift_sweep] yaw=")
+
+        file_handler.addFilter(_SummaryFilter())
+        handlers.append(file_handler)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s:%(name)s:%(message)s", handlers=handlers)
     angles = np.arange(args.yaw_start, args.yaw_end + 1e-9, args.yaw_step, dtype=float)
     if angles.size == 0:
