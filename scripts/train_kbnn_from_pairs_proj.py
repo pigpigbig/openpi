@@ -2,10 +2,11 @@
 Train KBNN (Kalman-style updates) on extracted (x, y) pair shards.
 
 Dataset format: output of scripts/extract_kbnn_pairs.py
-  - shard_*.npz with x: (N, proj_dim), y: (N, out_dim)
-  - meta.pt with proj_matrix, feature_mean/std, target_mean/std, residual_scale, etc.
+  - shard_*.npz with x: (N, flat_dim), y: (N, out_dim)
+  - meta.pt with feature_dim, horizon, out_dim, etc.
 
-This keeps the KBNN workflow separate from train_kbnn.py.
+This script creates its own projection matrix, projects x to proj_dim,
+and saves the proj_matrix + stats into the checkpoint for serving.
 """
 
 from __future__ import annotations
@@ -85,7 +86,7 @@ def main() -> None:
         raise FileNotFoundError(f"Missing meta.pt at {meta_path}")
     meta = torch.load(meta_path, map_location="cpu")
 
-    proj_dim = 256
+    proj_dim = int(meta.get("proj_dim", 256))
     feature_dim = int(meta["feature_dim"])
     horizon = int(meta["horizon"])
     out_dim = int(meta["out_dim"])
@@ -117,21 +118,22 @@ def main() -> None:
     global_step = 0
     explode = False
     # Project raw flat features into proj_dim (shape: [proj_dim, flat_dim])
-    proj_matrix = np.transpose(np.random.randn(proj_dim, feature_dim * horizon).astype(np.float32) / math.sqrt(
-        feature_dim * horizon
-    ))
+    flat_dim = feature_dim * horizon
+    proj_matrix = (
+        np.random.randn(proj_dim, flat_dim).astype(np.float32) / math.sqrt(flat_dim)
+    )
     for epoch in range(args.epochs):
         running = 0.0
         count = 0
         for shard in shards:
             data = np.load(shard)
-            if data["x"].shape[1] != feature_dim * horizon:
+            if data["x"].shape[1] != flat_dim:
                 raise ValueError(
-                    f"Expected raw flat features of shape (N, {feature_dim * horizon}) "
+                    f"Expected raw flat features of shape (N, {flat_dim}) "
                     f"but got {data['x'].shape}. If your shards are already projected, "
                     "do not use train_kbnn_from_pairs_proj.py."
                 )
-            x_np = data["x"] @ proj_matrix
+            x_np = data["x"] @ proj_matrix.T
             y_np = data["y"]
             if args.shuffle:
                 idx = np.random.permutation(x_np.shape[0])
