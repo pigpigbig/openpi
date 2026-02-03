@@ -85,8 +85,7 @@ def main() -> None:
         raise FileNotFoundError(f"Missing meta.pt at {meta_path}")
     meta = torch.load(meta_path, map_location="cpu")
 
-    #proj_dim = int(meta["proj_dim"])
-    proj_dim = 256
+    proj_dim = int(meta["proj_dim"])
     feature_dim = int(meta["feature_dim"])
     horizon = int(meta["horizon"])
     out_dim = int(meta["out_dim"])
@@ -117,14 +116,21 @@ def main() -> None:
 
     global_step = 0
     explode = False
-    proj_matrix = np.transpose(np.random.randn(proj_dim, feature_dim * horizon).astype(np.float32) / math.sqrt(feature_dim * horizon))
+    # Project raw flat features into proj_dim (shape: [proj_dim, flat_dim])
+    proj_matrix = np.transpose(np.random.randn(proj_dim, feature_dim * horizon).astype(np.float32) / math.sqrt(
+        feature_dim * horizon
+    ))
     for epoch in range(args.epochs):
         running = 0.0
         count = 0
         for shard in shards:
             data = np.load(shard)
-            print(proj_matrix.shape)
-            print(data["x"].shape)
+            if data["x"].shape[1] != feature_dim * horizon:
+                raise ValueError(
+                    f"Expected raw flat features of shape (N, {feature_dim * horizon}) "
+                    f"but got {data['x'].shape}. If your shards are already projected, "
+                    "do not use train_kbnn_from_pairs_proj.py."
+                )
             x_np = data["x"] @ proj_matrix
             y_np = data["y"]
             if args.shuffle:
@@ -166,7 +172,19 @@ def main() -> None:
                         max_mw_norm,
                     )
                     explode_path = f"{Path(args.output).with_suffix('')}_explode_step{global_step + 1}.pt"
-                    _save_kbnn(explode_path, kbnn, meta, proj_dim, kbnn_hidden, out_dim, proj_matrix=torch.as_tensor(proj_matrix))
+                    meta["feature_mean"] = feature_mean.detach().cpu()
+                    meta["feature_std"] = feature_std.detach().cpu()
+                    meta["target_mean"] = target_mean.detach().cpu()
+                    meta["target_std"] = target_std.detach().cpu()
+                    _save_kbnn(
+                        explode_path,
+                        kbnn,
+                        meta,
+                        proj_dim,
+                        kbnn_hidden,
+                        out_dim,
+                        proj_matrix=torch.as_tensor(proj_matrix),
+                    )
                     logging.warning("[kbnn_pairs] saved %s", explode_path)
                     explode = True
                     break
@@ -184,7 +202,19 @@ def main() -> None:
                     count = 0
                 if args.save_every > 0 and global_step % args.save_every == 0:
                     save_path = f"{Path(args.output).with_suffix('')}_step{global_step}.pt"
-                    _save_kbnn(save_path, kbnn, meta, proj_dim, kbnn_hidden, out_dim, proj_matrix=torch.as_tensor(proj_matrix))
+                    meta["feature_mean"] = feature_mean.detach().cpu()
+                    meta["feature_std"] = feature_std.detach().cpu()
+                    meta["target_mean"] = target_mean.detach().cpu()
+                    meta["target_std"] = target_std.detach().cpu()
+                    _save_kbnn(
+                        save_path,
+                        kbnn,
+                        meta,
+                        proj_dim,
+                        kbnn_hidden,
+                        out_dim,
+                        proj_matrix=torch.as_tensor(proj_matrix),
+                    )
                     logging.info("[kbnn_pairs] saved %s", save_path)
             if explode:
                 break
@@ -198,6 +228,10 @@ def main() -> None:
                 running / max(count, 1),
             )
 
+    meta["feature_mean"] = feature_mean.detach().cpu()
+    meta["feature_std"] = feature_std.detach().cpu()
+    meta["target_mean"] = target_mean.detach().cpu()
+    meta["target_std"] = target_std.detach().cpu()
     _save_kbnn(args.output, kbnn, meta, proj_dim, kbnn_hidden, out_dim, proj_matrix=torch.as_tensor(proj_matrix))
     logging.info("[kbnn_pairs] saved %s", args.output)
 
