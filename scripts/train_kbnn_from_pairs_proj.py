@@ -42,6 +42,7 @@ def _save_kbnn(
     proj_dim: int,
     kbnn_hidden: int,
     out_dim: int,
+    proj_matrix: torch.Tensor | None = None,
 ) -> None:
     torch.save(
         {
@@ -51,7 +52,7 @@ def _save_kbnn(
             "mws": [w.detach().cpu() for w in kbnn.mws],
             "feature_mean": meta["feature_mean"],
             "feature_std": meta["feature_std"],
-            "proj_matrix": meta["proj_matrix"],
+            "proj_matrix": proj_matrix if proj_matrix is not None else meta["proj_matrix"],
             "proj_dim": proj_dim,
             "kbnn_hidden": kbnn_hidden,
             "kbnn_out_dim": out_dim,
@@ -165,7 +166,7 @@ def main() -> None:
                         max_mw_norm,
                     )
                     explode_path = f"{Path(args.output).with_suffix('')}_explode_step{global_step + 1}.pt"
-                    _save_kbnn(explode_path, kbnn, meta, proj_dim, kbnn_hidden, out_dim)
+                    _save_kbnn(explode_path, kbnn, meta, proj_dim, kbnn_hidden, out_dim, proj_matrix=torch.as_tensor(proj_matrix))
                     logging.warning("[kbnn_pairs] saved %s", explode_path)
                     explode = True
                     break
@@ -183,7 +184,7 @@ def main() -> None:
                     count = 0
                 if args.save_every > 0 and global_step % args.save_every == 0:
                     save_path = f"{Path(args.output).with_suffix('')}_step{global_step}.pt"
-                    _save_kbnn(save_path, kbnn, meta, proj_dim, kbnn_hidden, out_dim)
+                    _save_kbnn(save_path, kbnn, meta, proj_dim, kbnn_hidden, out_dim, proj_matrix=torch.as_tensor(proj_matrix))
                     logging.info("[kbnn_pairs] saved %s", save_path)
             if explode:
                 break
@@ -197,7 +198,7 @@ def main() -> None:
                 running / max(count, 1),
             )
 
-    _save_kbnn(args.output, kbnn, meta, proj_dim, kbnn_hidden, out_dim)
+    _save_kbnn(args.output, kbnn, meta, proj_dim, kbnn_hidden, out_dim, proj_matrix=torch.as_tensor(proj_matrix))
     logging.info("[kbnn_pairs] saved %s", args.output)
 
 
