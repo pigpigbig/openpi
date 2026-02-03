@@ -294,6 +294,8 @@ def collect(args: Args) -> None:
                     args.resize_size,
                     env.sim if hasattr(env, "sim") else env.env.sim,
                 )
+                # Match main_camshift preprocessing: rotate 180 degrees.
+                camshift_img = np.ascontiguousarray(camshift_img[::-1, ::-1])
                 camshift_img = image_tools.convert_to_uint8(camshift_img)
                 camshift_frames.append(camshift_img)
 
