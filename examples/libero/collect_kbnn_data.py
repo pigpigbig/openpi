@@ -99,9 +99,17 @@ def _rotmat_to_quat(R: np.ndarray) -> np.ndarray:
     q = np.array([qw, qx, qy, qz], dtype=np.float64)
     return q / (np.linalg.norm(q) + 1e-9)
 
+def _quat_apply(q: np.ndarray, v: np.ndarray) -> np.ndarray:
+    """Rotate vector v by quaternion q (w, x, y, z)."""
+    w, x, y, z = q
+    qvec = np.array([x, y, z], dtype=np.float64)
+    uv = np.cross(qvec, v)
+    uuv = np.cross(qvec, uv)
+    return v + 2.0 * (w * uv + uuv)
+
 
 def _apply_camera_shift_for_render(model, cam_id, base_pos, pitch_deg, yaw_deg, fovy_deg, height, width, sim):
-    """Temporarily apply camshift to render a frame, then restore."""
+    """Temporarily apply camshift (match main_camshift.py) to render a frame, then restore."""
     orig_pos = np.array(model.cam_pos[cam_id], copy=True)
     orig_quat = np.array(model.cam_quat[cam_id], copy=True)
     orig_fovy = float(model.cam_fovy[cam_id])
@@ -109,16 +117,22 @@ def _apply_camera_shift_for_render(model, cam_id, base_pos, pitch_deg, yaw_deg, 
     pitch_theta = math.radians(pitch_deg)
     yaw_theta = math.radians(yaw_deg)
 
-    # rotate position about z by yaw
+    base_quat = orig_quat
+    base_target = base_pos + _quat_apply(base_quat, np.array([0.0, 0.0, -1.0], dtype=np.float64))
+
+    # rotate position about z by yaw (same as main_camshift)
     cos_y, sin_y = math.cos(yaw_theta), math.sin(yaw_theta)
     Rz = np.array([[cos_y, -sin_y, 0.0], [sin_y, cos_y, 0.0], [0.0, 0.0, 1.0]], dtype=np.float64)
     new_pos = Rz @ base_pos
 
-    # look-at to base target (assume -z forward from base pose)
-    forward = np.array([0.0, 0.0, -1.0], dtype=np.float64)
-    target = new_pos + forward
-    f = target - new_pos
-    f /= np.linalg.norm(f) + 1e-9
+    # Build a look-at orientation so the camera points to the base target from its new position.
+    target = base_target
+    forward_vec = target - new_pos
+    norm_f = np.linalg.norm(forward_vec)
+    if norm_f < 1e-6:
+        forward_vec = np.array([0.0, 0.0, -1.0], dtype=np.float64)
+        norm_f = 1.0
+    f = forward_vec / norm_f
     up = np.array([0.0, 0.0, 1.0], dtype=np.float64)
     if abs(np.dot(f, up)) > 0.99:
         up = np.array([0.0, 1.0, 0.0], dtype=np.float64)
@@ -126,11 +140,11 @@ def _apply_camera_shift_for_render(model, cam_id, base_pos, pitch_deg, yaw_deg, 
     s /= np.linalg.norm(s) + 1e-9
     u = np.cross(s, f)
     R = np.stack([[s[0], u[0], -f[0]], [s[1], u[1], -f[1]], [s[2], u[2], -f[2]]], axis=0)
-    look_quat = _rotmat_to_quat(R)
+    lookat_quat = _rotmat_to_quat(R)
 
     # apply additional pitch about camera x-axis
     pw, px, py, pz = math.cos(pitch_theta / 2.0), math.sin(pitch_theta / 2.0), 0.0, 0.0
-    lw, lx, ly, lz = look_quat
+    lw, lx, ly, lz = lookat_quat
     composed = np.array(
         [
             lw * pw - lx * px - ly * py - lz * pz,
