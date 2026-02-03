@@ -308,7 +308,6 @@ def collect(args: Args) -> None:
                 ep_path = env_dir / f"ep_{successes:04d}.npz"
                 np.savez_compressed(
                     ep_path,
-                    images=np.stack(frames, axis=0),  # default camera (policy input)
                     camshift_images=np.stack(camshift_frames, axis=0),  # target camshift view
                     wrist_images=np.stack(wrist_frames, axis=0),
                     states=np.stack(states, axis=0),
