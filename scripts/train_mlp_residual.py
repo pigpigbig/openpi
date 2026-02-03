@@ -144,6 +144,7 @@ def main() -> None:
         "out_dim": meta["out_dim"],
         "horizon": meta["horizon"],
         "feature_dim": meta["feature_dim"],
+        "no_proj": bool(meta.get("no_proj", False)),
     }
     torch.save(ckpt, args.output)
     logging.info("[mlp] saved checkpoint to %s", args.output)

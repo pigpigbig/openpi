@@ -70,6 +70,11 @@ def main() -> None:
     ap.add_argument("--env-ids", type=int, nargs="*", default=None)
     ap.add_argument("--samples", type=int, default=0, help="Total samples to extract (0 = use all episodes once)")
     ap.add_argument("--proj-dim", type=int, default=256)
+    ap.add_argument(
+        "--no-proj",
+        action="store_true",
+        help="Skip projection matrix and use raw flattened features as x.",
+    )
     ap.add_argument("--normalize-target", action="store_true", help="Normalize y using target mean/std")
     ap.add_argument("--no-feature-normalization", action="store_true", help="Disable feature normalization")
     ap.add_argument("--feature-stats-samples", type=int, default=0, help="Samples to estimate feature stats")
@@ -110,20 +115,29 @@ def main() -> None:
     feat_dim = 1024
     flat_dim = horizon * feat_dim
     out_dim = horizon * 32
+    proj_dim = flat_dim if args.no_proj else args.proj_dim
+    if args.no_proj:
+        logging.info("[pairs] --no-proj enabled; using flat_dim=%d and skipping projection.", flat_dim)
 
     ckpt = None
     if args.init_from:
         ckpt = torch.load(args.init_from, map_location="cpu")
 
-    if args.init_from and ckpt.get("proj_matrix") is not None:
+    if args.no_proj:
+        if args.init_from and (ckpt.get("no_proj") is not True or ckpt.get("proj_matrix") is not None):
+            raise ValueError(
+                "--no-proj requires an init_from checkpoint created with --no-proj (no_proj=True)."
+            )
+        proj_matrix = None
+    elif args.init_from and ckpt.get("proj_matrix") is not None:
         proj_matrix = ckpt["proj_matrix"].to(dtype=torch.float32, device=device)
-        if proj_matrix.shape != (args.proj_dim, flat_dim):
+        if proj_matrix.shape != (proj_dim, flat_dim):
             raise ValueError(
                 "proj_matrix shape mismatch: "
-                f"checkpoint has {tuple(proj_matrix.shape)}, expected {(args.proj_dim, flat_dim)}"
+                f"checkpoint has {tuple(proj_matrix.shape)}, expected {(proj_dim, flat_dim)}"
             )
     else:
-        proj_matrix = torch.randn(args.proj_dim, flat_dim, device=device) / math.sqrt(flat_dim)
+        proj_matrix = torch.randn(proj_dim, flat_dim, device=device) / math.sqrt(flat_dim)
 
     def sample_training_point(ep_path: str | None = None):
         if ep_path is None:
@@ -182,25 +196,30 @@ def main() -> None:
 
     # Feature stats for normalization of projected features.
     if args.no_feature_normalization:
-        feature_mean = torch.zeros(args.proj_dim, dtype=torch.float32, device=device)
-        feature_std = torch.ones(args.proj_dim, dtype=torch.float32, device=device)
+        feature_mean = torch.zeros(proj_dim, dtype=torch.float32, device=device)
+        feature_std = torch.ones(proj_dim, dtype=torch.float32, device=device)
         logging.info("[pairs] feature normalization disabled (mean=0, std=1)")
     else:
         ckpt_feature_mean = ckpt.get("feature_mean") if ckpt else None
         ckpt_feature_std = ckpt.get("feature_std") if ckpt else None
         if ckpt_feature_mean is not None and ckpt_feature_std is not None:
+            if ckpt_feature_mean.numel() != proj_dim or ckpt_feature_std.numel() != proj_dim:
+                raise ValueError(
+                    "feature stats size mismatch for --no-proj: "
+                    f"checkpoint has {ckpt_feature_mean.numel()}, expected {proj_dim}."
+                )
             feature_mean = ckpt_feature_mean.to(dtype=torch.float32, device=device)
             feature_std = ckpt_feature_std.to(dtype=torch.float32, device=device)
             logging.info("[pairs] using feature stats from %s", args.init_from)
         else:
             stats_samples = args.feature_stats_samples or min(len(files), 1000)
-            sum_x = torch.zeros(args.proj_dim, dtype=torch.float64, device=device)
-            sum_x2 = torch.zeros(args.proj_dim, dtype=torch.float64, device=device)
+            sum_x = torch.zeros(proj_dim, dtype=torch.float64, device=device)
+            sum_x2 = torch.zeros(proj_dim, dtype=torch.float64, device=device)
             for _ in range(stats_samples):
                 obs, act_chunk = sample_training_point()
                 feats, _, _ = _sample_feature(obs, act_chunk)
                 x_flat = feats.reshape(-1)
-                x_proj = proj_matrix @ x_flat
+                x_proj = x_flat if proj_matrix is None else (proj_matrix @ x_flat)
                 sum_x += x_proj.double()
                 sum_x2 += (x_proj.double() ** 2)
             feature_mean = (sum_x / stats_samples).float()
@@ -251,18 +270,19 @@ def main() -> None:
     meta_path = out_dir / "meta.pt"
     torch.save(
         {
-            "proj_matrix": proj_matrix.detach().cpu(),
+            "proj_matrix": proj_matrix.detach().cpu() if proj_matrix is not None else None,
             "feature_mean": feature_mean.detach().cpu(),
             "feature_std": feature_std.detach().cpu(),
             "target_mean": target_mean.detach().cpu(),
             "target_std": target_std.detach().cpu(),
             "residual_scale": args.residual_scale,
-            "proj_dim": args.proj_dim,
+            "proj_dim": proj_dim,
             "out_dim": out_dim,
             "horizon": horizon,
             "feature_dim": feat_dim,
             "normalize_target": bool(args.normalize_target),
             "feature_normalization": not args.no_feature_normalization,
+            "no_proj": bool(args.no_proj),
             "policy_config": args.policy_config,
             "checkpoint_dir": args.checkpoint_dir,
             "norm_stats_assets_dir": args.norm_stats_assets_dir,
@@ -285,7 +305,7 @@ def main() -> None:
             obs, act_chunk = sample_training_point(files[idx])
         feats, noise, actions_t = _sample_feature(obs, act_chunk)
         x_flat = feats.reshape(-1)
-        x_proj = proj_matrix @ x_flat
+        x_proj = x_flat if proj_matrix is None else (proj_matrix @ x_flat)
         x_proj = (x_proj - feature_mean) / feature_std
         base_out = model.action_out_proj(feats).detach()
         target = (noise - actions_t).squeeze(0)

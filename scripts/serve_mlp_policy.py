@@ -17,7 +17,7 @@ class MLPActionHead(torch.nn.Module):
     def __init__(
         self,
         mlp: torch.nn.Module,
-        proj_matrix: torch.Tensor,
+        proj_matrix: torch.Tensor | None,
         feature_mean: torch.Tensor,
         feature_std: torch.Tensor,
         target_mean: torch.Tensor | None,
@@ -28,7 +28,10 @@ class MLPActionHead(torch.nn.Module):
     ):
         super().__init__()
         self.mlp = mlp
-        self.register_buffer("proj_matrix", proj_matrix.clone().detach())
+        if proj_matrix is None:
+            self.proj_matrix = None
+        else:
+            self.register_buffer("proj_matrix", proj_matrix.clone().detach())
         self.register_buffer("feature_mean", feature_mean.clone().detach())
         self.register_buffer("feature_std", feature_std.clone().detach())
         if target_mean is not None and target_std is not None:
@@ -47,7 +50,7 @@ class MLPActionHead(torch.nn.Module):
             x = x.unsqueeze(1)
         batch_size, horizon, width = x.shape
         flat = x.reshape(batch_size, -1)
-        proj = flat @ self.proj_matrix.T
+        proj = flat if self.proj_matrix is None else (flat @ self.proj_matrix.T)
         proj = (proj - self.feature_mean) / self.feature_std
         hidden = self.mlp(proj)
         if float(self.residual_scale) != 0.0:
@@ -165,7 +168,9 @@ def main(args: Args) -> None:
     if use_mlp:
         device = policy._pytorch_device  # noqa: SLF001
         ckpt = _load_mlp_checkpoint(args.mlp_checkpoint, device=device)
-        proj_matrix = ckpt["proj_matrix"].to(dtype=torch.float32, device=device)
+        proj_matrix = ckpt["proj_matrix"]
+        if proj_matrix is not None:
+            proj_matrix = proj_matrix.to(dtype=torch.float32, device=device)
         feature_mean = ckpt["feature_mean"].to(dtype=torch.float32, device=device)
         feature_std = ckpt["feature_std"].to(dtype=torch.float32, device=device)
         target_mean = ckpt.get("target_mean")
