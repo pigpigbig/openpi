@@ -19,17 +19,13 @@ import pathlib
 from typing import List, Optional
 
 import numpy as np
-import torch
 from libero.libero import benchmark
 from libero.libero import get_libero_path
 from libero.libero.envs import OffScreenRenderEnv
 from openpi_client import image_tools
+from openpi_client import websocket_client_policy as _websocket_client_policy
 import tqdm
 import tyro
-
-from openpi.policies import policy_config as _policy_config
-from openpi.training import checkpoints as _checkpoints
-from openpi.training import config as _config
 
 LIBERO_ENV_RESOLUTION = 256
 LIBERO_DUMMY_ACTION = [0.0] * 6 + [-1.0]
@@ -37,11 +33,9 @@ LIBERO_DUMMY_ACTION = [0.0] * 6 + [-1.0]
 
 @dataclasses.dataclass
 class Args:
-    # Model checkpoint
-    checkpoint_dir: str
-    norm_stats_assets_dir: str
-    policy_config: str = "pi05_libero"
-    device: str = "cuda"
+    # Model server
+    host: str = "0.0.0.0"
+    port: int = 8000
 
     # LIBERO evaluation
     task_suite_name: str = "libero_10"
@@ -86,50 +80,22 @@ def _quat2axisangle(quat):
 def main(args: Args) -> None:
     logging.basicConfig(level=getattr(logging, args.log_level.upper(), logging.INFO), force=True)
 
-    train_config = _config.get_config(args.policy_config)
-    data_config = train_config.data.create(train_config.assets_dirs, train_config.model)
-    if data_config.asset_id is None:
-        raise ValueError("Train config has no asset_id; cannot load norm stats.")
-    norm_stats = _checkpoints.load_norm_stats(pathlib.Path(args.norm_stats_assets_dir), data_config.asset_id)
-
-    policy = _policy_config.create_trained_policy(
-        train_config,
-        args.checkpoint_dir,
-        norm_stats=norm_stats,
-        pytorch_device=args.device,
-    )
-    model = policy._model  # noqa: SLF001
-    model.eval()
-
-    # Capture hooks (last denoise step only).
-    capture: dict[str, torch.Tensor | None] = {
-        "action_in": None,
-        "action_out_in": None,
-        "action_out": None,
-    }
-
-    def _hook_action_in(_module, _inputs, output):
-        capture["action_in"] = output.detach().cpu()
-
-    def _hook_action_out(_module, inputs, output):
-        capture["action_out_in"] = inputs[0].detach().cpu()
-        capture["action_out"] = output.detach().cpu()
-
-    h1 = model.action_in_proj.register_forward_hook(_hook_action_in)
-    h2 = model.action_out_proj.register_forward_hook(_hook_action_out)
+    client = _websocket_client_policy.WebsocketClientPolicy(args.host, args.port)
+    server_metadata = client.get_server_metadata()
 
     out_root = pathlib.Path(args.output_dir)
     out_root.mkdir(parents=True, exist_ok=True)
     # Save action_out_proj weights/bias once.
     meta_path = out_root / "meta.pt"
     if not meta_path.exists():
-        torch.save(
-            {
-                "action_out_proj_weight": model.action_out_proj.weight.detach().cpu(),
-                "action_out_proj_bias": model.action_out_proj.bias.detach().cpu(),
-            },
-            meta_path,
-        )
+        weight = server_metadata.get("action_out_proj_weight")
+        bias = server_metadata.get("action_out_proj_bias")
+        if weight is not None or bias is not None:
+            np.savez_compressed(
+                meta_path.with_suffix(".npz"),
+                action_out_proj_weight=weight,
+                action_out_proj_bias=bias,
+            )
 
     benchmark_dict = benchmark.get_benchmark_dict()
     task_suite = benchmark_dict[args.task_suite_name]()
@@ -189,14 +155,14 @@ def main(args: Args) -> None:
                         "prompt": str(task_description),
                     }
 
-                    capture["action_in"] = None
-                    capture["action_out_in"] = None
-                    capture["action_out"] = None
-                    outputs = policy.infer(element)
+                    outputs = client.infer(element)
                     action_chunk = outputs["actions"]
                     action_plan.extend(action_chunk[: args.replan_steps])
 
-                    if capture["action_in"] is None or capture["action_out"] is None:
+                    action_expert_in = outputs.get("action_expert_in")
+                    action_out_proj_in = outputs.get("action_out_proj_in")
+                    action_out_proj_out = outputs.get("action_out_proj_out")
+                    if action_expert_in is None or action_out_proj_out is None:
                         logging.warning(
                             "[expert_io] Missing hook captures at env %d ep %d step %d",
                             task_id,
@@ -204,9 +170,9 @@ def main(args: Args) -> None:
                             t,
                         )
                     else:
-                        expert_in_list.append(capture["action_in"][0].numpy())
-                        out_in_list.append(capture["action_out_in"][0].numpy())
-                        out_list.append(capture["action_out"][0].numpy())
+                        expert_in_list.append(np.asarray(action_expert_in)[0])
+                        out_in_list.append(np.asarray(action_out_proj_in)[0])
+                        out_list.append(np.asarray(action_out_proj_out)[0])
                         actions_list.append(np.asarray(action_chunk))
 
                 action = action_plan.popleft()
@@ -225,9 +191,6 @@ def main(args: Args) -> None:
                 env_id=task_id,
                 prompt=str(task_description),
             )
-
-    h1.remove()
-    h2.remove()
 
 
 if __name__ == "__main__":
