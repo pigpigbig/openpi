@@ -86,7 +86,7 @@ def main() -> None:
         raise FileNotFoundError(f"Missing meta.pt at {meta_path}")
     meta = torch.load(meta_path, map_location="cpu")
 
-    proj_dim = int(meta.get("proj_dim", 256))
+    proj_dim = 256
     feature_dim = int(meta["feature_dim"])
     horizon = int(meta["horizon"])
     out_dim = int(meta["out_dim"])

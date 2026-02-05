@@ -43,6 +43,7 @@ class Args:
     camera_pitch_deg: float = 0.0  # tilt toward the table (positive tilts up less steeply)
     camera_yaw_deg: float = 45.0  # move camera around table normal (rotate location)
     camera_fovy_deg: Optional[float] = 80.0  # widen field of view to capture the whole table
+    camera_radius_scale: float = 1.0  # scale distance from target after yaw
 
     #################################################################################################################
     # Utils
@@ -97,7 +98,13 @@ def _quat_apply(q: np.ndarray, v: np.ndarray) -> np.ndarray:
     return v + 2.0 * (w * uv + uuv)
 
 
-def _apply_camera_shift(env, pitch_deg: float, yaw_deg: float = 0.0, fovy_deg: Optional[float] = None) -> None:
+def _apply_camera_shift(
+    env,
+    pitch_deg: float,
+    yaw_deg: float = 0.0,
+    fovy_deg: Optional[float] = None,
+    camera_radius_scale: float = 1.0,
+) -> None:
     """
     Apply pitch/yaw rotations to the MuJoCo camera named 'agentview', keeping the original base orientation.
 
@@ -164,6 +171,8 @@ def _apply_camera_shift(env, pitch_deg: float, yaw_deg: float = 0.0, fovy_deg: O
 
     # Build a look-at orientation so the camera points to the base target from its new position, then apply extra pitch.
     target = base_target
+    if camera_radius_scale is not None and float(camera_radius_scale) != 1.0:
+        new_pos = target + (new_pos - target) * float(camera_radius_scale)
     forward_vec = target - new_pos
     norm_f = np.linalg.norm(forward_vec)
     if norm_f < 1e-6:
@@ -230,7 +239,8 @@ def eval_libero(args: Args):
     logging.info(f"Task suite: {args.task_suite_name}")
     logging.info(
         f"[camshift] camera_pitch_deg = {args.camera_pitch_deg}, "
-        f"camera_yaw_deg = {args.camera_yaw_deg}, camera_fovy_deg = {args.camera_fovy_deg}"
+        f"camera_yaw_deg = {args.camera_yaw_deg}, camera_fovy_deg = {args.camera_fovy_deg}, "
+        f"camera_radius_scale = {args.camera_radius_scale}"
     )
 
     pathlib.Path(args.video_out_path).mkdir(parents=True, exist_ok=True)
@@ -275,6 +285,7 @@ def eval_libero(args: Args):
             args.camera_pitch_deg,
             args.camera_yaw_deg,
             args.camera_fovy_deg,
+            args.camera_radius_scale,
         )
 
         # Start episodes
@@ -284,13 +295,25 @@ def eval_libero(args: Args):
 
             # Reset environment and re-apply camera shift
             env.reset()
-            _apply_camera_shift(env, args.camera_pitch_deg, args.camera_yaw_deg, args.camera_fovy_deg)
+            _apply_camera_shift(
+                env,
+                args.camera_pitch_deg,
+                args.camera_yaw_deg,
+                args.camera_fovy_deg,
+                args.camera_radius_scale,
+            )
 
             action_plan = collections.deque()
 
             # Set initial states (and re-apply camera shift to be safe)
             obs = env.set_init_state(initial_states[episode_idx])
-            _apply_camera_shift(env, args.camera_pitch_deg, args.camera_yaw_deg, args.camera_fovy_deg)
+            _apply_camera_shift(
+                env,
+                args.camera_pitch_deg,
+                args.camera_yaw_deg,
+                args.camera_fovy_deg,
+                args.camera_radius_scale,
+            )
 
             # Setup
             t = 0
@@ -411,6 +434,7 @@ def _get_libero_env(
     camera_pitch_deg: float,
     camera_yaw_deg: float,
     camera_fovy_deg: Optional[float],
+    camera_radius_scale: float,
 ):
     """Initializes and returns the LIBERO environment, along with the task description."""
     task_description = task.language
@@ -418,7 +442,7 @@ def _get_libero_env(
     env_args = {"bddl_file_name": task_bddl_file, "camera_heights": resolution, "camera_widths": resolution}
     env = OffScreenRenderEnv(**env_args)
     env.seed(seed)  # IMPORTANT: seed seems to affect object positions even when using fixed initial state
-    _apply_camera_shift(env, camera_pitch_deg, camera_yaw_deg, camera_fovy_deg)
+    _apply_camera_shift(env, camera_pitch_deg, camera_yaw_deg, camera_fovy_deg, camera_radius_scale)
     return env, task_description
 
 
