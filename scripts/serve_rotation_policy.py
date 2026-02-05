@@ -50,7 +50,7 @@ class DummyKBNNResidualRotationHead(torch.nn.Module):
             updated7 = base7 + self._kbnn(base7)
 
         if self.rotation_matrix is not None:
-            rot = self.rotation_matrix
+            rot = self.rotation_matrix.to(updated7.device)
             updated7 = updated7.clone()
             if updated7.ndim == 3:
                 updated7 = updated7 @ rot.T
@@ -137,13 +137,18 @@ def main(args: Args) -> None:
             raise ValueError("rotation_matrix must have 49 floats (row-major 7x7).")
         rotation_tensor = torch.tensor(args.rotation_matrix, dtype=torch.float32).reshape(7, 7)
 
-    model.action_out_proj = DummyKBNNResidualRotationHead(
+    action_head = DummyKBNNResidualRotationHead(
         base_head=model.action_out_proj,
         rotation_matrix=rotation_tensor,
         kbnn_scale=args.kbnn_scale,
         disable_kbnn=args.disable_kbnn,
         debug_every=args.debug_every,
     )
+    try:
+        action_head = action_head.to(next(model.parameters()).device)
+    except StopIteration:
+        pass
+    model.action_out_proj = action_head
 
     # Record the policy's behavior.
     if args.record:
