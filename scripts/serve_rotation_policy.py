@@ -3,6 +3,7 @@ import logging
 import socket
 from pathlib import Path
 from typing import List, Optional
+from KBNN2 import KBNN
 
 import torch
 import tyro
@@ -13,7 +14,13 @@ from openpi.policies import policy_config as _policy_config
 from openpi.serving import websocket_policy_server
 from openpi.training import config as _config
 
-
+# TODO: Change to run with 100 KBNN checkpoints and plot them, rather than running one at the each time
+# See train_kbnn_from_action for training detail
+# See checkpoints in kbnn_weights_step_0
+# step -1: apply normalization and denormalization for input and output of kbnn
+# step 0: run 50 tests for checkpoint 58 <- Goal for Feb 6
+# step 1: run 50 tests each, for each checkpoint from 18 to 58
+# step 2: test the same thing on conventional NN
 class DummyKBNNResidualRotationHead(torch.nn.Module):
     """Apply (pi05 + kbnn(pi05)) -> rotate -> pad to 32 dims.
 
@@ -52,6 +59,7 @@ class DummyKBNNResidualRotationHead(torch.nn.Module):
         if self.rotation_matrix is not None:
             rot = self.rotation_matrix.to(updated7.device)
             updated7 = updated7.clone()
+            # TODO: put rotation matrix to the left
             if updated7.ndim == 3:
                 updated7 = updated7 @ rot.T
             elif updated7.ndim == 2:
