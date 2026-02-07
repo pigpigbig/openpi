@@ -115,13 +115,20 @@ class DummyKBNNResidualRotationHead(torch.nn.Module):
                 with torch.no_grad():
                     base_norm = float(torch.linalg.norm(base))
                     out_norm = float(torch.linalg.norm(out))
+                    diff = updated7 - base7
+                    diff_norm = float(torch.linalg.norm(diff))
+                    diff_mean = float(diff.abs().mean())
+                    diff_max = float(diff.abs().max())
                     z_mean = float(updated7[..., 2].mean())
                     grip_mean = float(updated7[..., 6].mean())
                     logging.info(
-                        "[kbnn_debug] step=%d base_norm=%.6f out_norm=%.6f z_mean=%.6f grip_mean=%.6f",
+                        "[kbnn_debug] step=%d base_norm=%.6f out_norm=%.6f diff_norm=%.6f diff_mean=%.6f diff_max=%.6f z_mean=%.6f grip_mean=%.6f",
                         self._debug_step,
                         base_norm,
                         out_norm,
+                        diff_norm,
+                        diff_mean,
+                        diff_max,
                         z_mean,
                         grip_mean,
                     )
