@@ -96,7 +96,7 @@ class DummyKBNNResidualRotationHead(torch.nn.Module):
             updated7 = base7 + self._kbnn(base7)
 
         if self.rotation_matrix is not None:
-            rot = self.rotation_matrix.to(updated7.device)
+            rot = self.rotation_matrix
             updated7 = updated7.clone()
             # TODO: put rotation matrix to the left
             if updated7.ndim == 3:
@@ -183,16 +183,23 @@ def main(args: Args) -> None:
     )
 
     model = policy._model  # noqa: SLF001
+    try:
+        model_device = next(model.parameters()).device
+    except StopIteration:
+        model_device = torch.device(args.pytorch_device or "cpu")
+    if args.pytorch_device == "cuda" and model_device.type != "cuda":
+        logging.warning("[serve_rotation] pytorch_device=cuda requested but model is on %s", model_device)
     rotation_tensor = None
     if args.rotation_matrix is not None:
         if len(args.rotation_matrix) != 49:
             raise ValueError("rotation_matrix must have 49 floats (row-major 7x7).")
-        rotation_tensor = torch.tensor(args.rotation_matrix, dtype=torch.float32).reshape(7, 7)
+        rotation_tensor = torch.tensor(args.rotation_matrix, dtype=torch.float32, device=model_device).reshape(7, 7)
 
+    kbnn_model = None
     if args.kbnn_checkpoint:
         kbnn_ckpt = torch.load(args.kbnn_checkpoint, map_location="cpu")
         if rotation_tensor is None and "rotation" in kbnn_ckpt:
-            rotation_tensor = kbnn_ckpt["rotation"].to(dtype=torch.float32)
+            rotation_tensor = kbnn_ckpt["rotation"].to(dtype=torch.float32, device=model_device)
         if args.kbnn_in_mean is None and "ref_mean" in kbnn_ckpt:
             args.kbnn_in_mean = kbnn_ckpt["ref_mean"].reshape(-1).tolist()
         if args.kbnn_in_std is None and "ref_std" in kbnn_ckpt:
@@ -209,14 +216,9 @@ def main(args: Args) -> None:
                 if not layers:
                     layers.append(in_dim)
                 layers.append(out_dim)
-            device = args.pytorch_device or ("cuda" if torch.cuda.is_available() else "cpu")
-            kbnn_model = KBNN(layers, dtype=torch.float32, device=device)
-            kbnn_model.mws = [w.to(dtype=torch.float32, device=device) for w in kbnn_ckpt["mws"]]
-            kbnn_model.sws = [w.to(dtype=torch.float32, device=device) for w in kbnn_ckpt["sws"]]
-        else:
-            kbnn_model = None
-    else:
-        kbnn_model = None
+            kbnn_model = KBNN(layers, dtype=torch.float32, device=str(model_device))
+            kbnn_model.mws = [w.to(dtype=torch.float32, device=model_device) for w in kbnn_ckpt["mws"]]
+            kbnn_model.sws = [w.to(dtype=torch.float32, device=model_device) for w in kbnn_ckpt["sws"]]
 
     def _tensor_or_none(values: Optional[List[float]], name: str) -> torch.Tensor | None:
         if values is None:
@@ -229,6 +231,14 @@ def main(args: Args) -> None:
     kbnn_in_std = _tensor_or_none(args.kbnn_in_std, "kbnn_in_std")
     kbnn_out_mean = _tensor_or_none(args.kbnn_out_mean, "kbnn_out_mean")
     kbnn_out_std = _tensor_or_none(args.kbnn_out_std, "kbnn_out_std")
+    if kbnn_in_mean is not None:
+        kbnn_in_mean = kbnn_in_mean.to(model_device)
+    if kbnn_in_std is not None:
+        kbnn_in_std = kbnn_in_std.to(model_device)
+    if kbnn_out_mean is not None:
+        kbnn_out_mean = kbnn_out_mean.to(model_device)
+    if kbnn_out_std is not None:
+        kbnn_out_std = kbnn_out_std.to(model_device)
     action_head = DummyKBNNResidualRotationHead(
         base_head=model.action_out_proj,
         rotation_matrix=rotation_tensor,
@@ -241,10 +251,7 @@ def main(args: Args) -> None:
         kbnn_out_std=kbnn_out_std,
         kbnn_model=kbnn_model,
     )
-    try:
-        action_head = action_head.to(next(model.parameters()).device)
-    except StopIteration:
-        pass
+    action_head = action_head.to(model_device)
     model.action_out_proj = action_head
 
     # Record the policy's behavior.
