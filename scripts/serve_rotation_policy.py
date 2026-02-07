@@ -35,6 +35,11 @@ class DummyKBNNResidualRotationHead(torch.nn.Module):
         kbnn_scale: float = 1.0,
         disable_kbnn: bool = False,
         debug_every: int = 0,
+        kbnn_in_mean: torch.Tensor | None = None,
+        kbnn_in_std: torch.Tensor | None = None,
+        kbnn_out_mean: torch.Tensor | None = None,
+        kbnn_out_std: torch.Tensor | None = None,
+        kbnn_model: KBNN | None = None,
     ):
         super().__init__()
         self.base_head = base_head
@@ -43,10 +48,44 @@ class DummyKBNNResidualRotationHead(torch.nn.Module):
         self.disable_kbnn = disable_kbnn
         self._debug_every = max(0, int(debug_every))
         self._debug_step = 0
+        self.kbnn_model = kbnn_model
+        if kbnn_in_mean is not None and kbnn_in_std is not None:
+            self.register_buffer("kbnn_in_mean", kbnn_in_mean.clone().detach())
+            self.register_buffer("kbnn_in_std", kbnn_in_std.clone().detach())
+        else:
+            self.kbnn_in_mean = None
+            self.kbnn_in_std = None
+        if kbnn_out_mean is not None and kbnn_out_std is not None:
+            self.register_buffer("kbnn_out_mean", kbnn_out_mean.clone().detach())
+            self.register_buffer("kbnn_out_std", kbnn_out_std.clone().detach())
+        else:
+            self.kbnn_out_mean = None
+            self.kbnn_out_std = None
 
     def _kbnn(self, action7: torch.Tensor) -> torch.Tensor:
         # Dummy KBNN: identity scaled output (can be replaced later).
-        return action7 * self.kbnn_scale
+        x = action7
+        if self.kbnn_in_mean is not None and self.kbnn_in_std is not None:
+            mean = self.kbnn_in_mean
+            std = self.kbnn_in_std
+            mask = std > 1e-6
+            x = torch.where(mask, (x - mean) / std, x)
+        if self.kbnn_model is None:
+            y = x * self.kbnn_scale
+        else:
+            flat = x.reshape(-1, x.shape[-1])
+            outs = []
+            with torch.no_grad():
+                for i in range(flat.shape[0]):
+                    cache = self.kbnn_model.forward(flat[i])
+                    outs.append(cache["mus"][-1])
+            y = torch.stack(outs, dim=0).reshape(x.shape)
+        if self.kbnn_out_mean is not None and self.kbnn_out_std is not None:
+            mean = self.kbnn_out_mean
+            std = self.kbnn_out_std
+            mask = std > 1e-6
+            y = torch.where(mask, y * std + mean, y)
+        return y
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         base = self.base_head(x)
@@ -105,8 +144,13 @@ class Args:
     default_prompt: str | None = None
     pytorch_device: str | None = None
     norm_stats_assets_dir: str | None = None
+    kbnn_checkpoint: str | None = None
     disable_kbnn: bool = False
     kbnn_scale: float = 1.0
+    kbnn_in_mean: Optional[List[float]] = None
+    kbnn_in_std: Optional[List[float]] = None
+    kbnn_out_mean: Optional[List[float]] = None
+    kbnn_out_std: Optional[List[float]] = None
     record: bool = False
     debug_every: int = 0
     # Rotation matrix to include in server metadata (row-major 49 floats for 7x7).
@@ -145,12 +189,57 @@ def main(args: Args) -> None:
             raise ValueError("rotation_matrix must have 49 floats (row-major 7x7).")
         rotation_tensor = torch.tensor(args.rotation_matrix, dtype=torch.float32).reshape(7, 7)
 
+    if args.kbnn_checkpoint:
+        kbnn_ckpt = torch.load(args.kbnn_checkpoint, map_location="cpu")
+        if rotation_tensor is None and "rotation" in kbnn_ckpt:
+            rotation_tensor = kbnn_ckpt["rotation"].to(dtype=torch.float32)
+        if args.kbnn_in_mean is None and "ref_mean" in kbnn_ckpt:
+            args.kbnn_in_mean = kbnn_ckpt["ref_mean"].reshape(-1).tolist()
+        if args.kbnn_in_std is None and "ref_std" in kbnn_ckpt:
+            args.kbnn_in_std = kbnn_ckpt["ref_std"].reshape(-1).tolist()
+        if args.kbnn_out_mean is None and "target_mean" in kbnn_ckpt:
+            args.kbnn_out_mean = kbnn_ckpt["target_mean"].reshape(-1).tolist()
+        if args.kbnn_out_std is None and "target_std" in kbnn_ckpt:
+            args.kbnn_out_std = kbnn_ckpt["target_std"].reshape(-1).tolist()
+        if "mws" in kbnn_ckpt and "sws" in kbnn_ckpt:
+            layers = []
+            for mw in kbnn_ckpt["mws"]:
+                in_dim = mw.shape[1] - 1
+                out_dim = mw.shape[0]
+                if not layers:
+                    layers.append(in_dim)
+                layers.append(out_dim)
+            device = args.pytorch_device or ("cuda" if torch.cuda.is_available() else "cpu")
+            kbnn_model = KBNN(layers, dtype=torch.float32, device=device)
+            kbnn_model.mws = [w.to(dtype=torch.float32, device=device) for w in kbnn_ckpt["mws"]]
+            kbnn_model.sws = [w.to(dtype=torch.float32, device=device) for w in kbnn_ckpt["sws"]]
+        else:
+            kbnn_model = None
+    else:
+        kbnn_model = None
+
+    def _tensor_or_none(values: Optional[List[float]], name: str) -> torch.Tensor | None:
+        if values is None:
+            return None
+        if len(values) != 7:
+            raise ValueError(f"{name} must have 7 floats (got {len(values)})")
+        return torch.tensor(values, dtype=torch.float32)
+
+    kbnn_in_mean = _tensor_or_none(args.kbnn_in_mean, "kbnn_in_mean")
+    kbnn_in_std = _tensor_or_none(args.kbnn_in_std, "kbnn_in_std")
+    kbnn_out_mean = _tensor_or_none(args.kbnn_out_mean, "kbnn_out_mean")
+    kbnn_out_std = _tensor_or_none(args.kbnn_out_std, "kbnn_out_std")
     action_head = DummyKBNNResidualRotationHead(
         base_head=model.action_out_proj,
         rotation_matrix=rotation_tensor,
         kbnn_scale=args.kbnn_scale,
         disable_kbnn=args.disable_kbnn,
         debug_every=args.debug_every,
+        kbnn_in_mean=kbnn_in_mean,
+        kbnn_in_std=kbnn_in_std,
+        kbnn_out_mean=kbnn_out_mean,
+        kbnn_out_std=kbnn_out_std,
+        kbnn_model=kbnn_model,
     )
     try:
         action_head = action_head.to(next(model.parameters()).device)
