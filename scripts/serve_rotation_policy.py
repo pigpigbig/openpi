@@ -6,6 +6,10 @@ from typing import List, Optional
 from KBNN2 import KBNN
 
 import torch
+try:
+    import torch._dynamo as _dynamo
+except Exception:  # pragma: no cover - torch._dynamo may be unavailable
+    _dynamo = None
 import tyro
 
 from openpi.training import checkpoints as _checkpoints
@@ -112,6 +116,8 @@ class DummyKBNNResidualRotationHead(torch.nn.Module):
         if self._debug_every > 0:
             self._debug_step += 1
             if self._debug_step % self._debug_every == 0:
+                if _dynamo is not None and _dynamo.is_compiling():
+                    return out
                 with torch.no_grad():
                     base_norm = float(torch.linalg.norm(base))
                     out_norm = float(torch.linalg.norm(out))
@@ -119,7 +125,9 @@ class DummyKBNNResidualRotationHead(torch.nn.Module):
                     diff_norm = float(torch.linalg.norm(diff))
                     diff_mean = float(diff.abs().mean())
                     diff_max = float(diff.abs().max())
-                    diff_per_dim = diff.mean(dim=tuple(range(diff.ndim - 1))).tolist()
+                    diff_per_dim = (
+                        diff.mean(dim=tuple(range(diff.ndim - 1))).detach().cpu().numpy().tolist()
+                    )
                     z_mean = float(updated7[..., 2].mean())
                     grip_mean = float(updated7[..., 6].mean())
                     logging.info(
@@ -130,7 +138,7 @@ class DummyKBNNResidualRotationHead(torch.nn.Module):
                         diff_norm,
                         diff_mean,
                         diff_max,
-                        [f"{v:.6f}" for v in diff_per_dim],
+                        [round(v, 6) for v in diff_per_dim],
                         z_mean,
                         grip_mean,
                     )
