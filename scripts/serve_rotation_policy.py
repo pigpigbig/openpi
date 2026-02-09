@@ -85,7 +85,7 @@ class KBNNRotationProcessor(torch.nn.Module):
     def forward(self, actions: torch.Tensor) -> torch.Tensor:
         base7 = actions[..., :7]
         if self.disable_kbnn:
-            updated7 = base7 + torch.randn_like(base7) * 2
+            updated7 = base7
         else:
             updated7 = base7 + self._kbnn(base7)
 
@@ -102,38 +102,6 @@ class KBNNRotationProcessor(torch.nn.Module):
 
         out = actions.clone()
         out[..., :7] = updated7
-
-<<<<<<< Updated upstream
-=======
-        if self._debug_every > 0:
-            self._debug_step += 1
-            if self._debug_step % self._debug_every == 0:
-                with torch.no_grad():
-                    base_norm = float(torch.linalg.norm(base))
-                    out_norm = float(torch.linalg.norm(out))
-                    diff = updated7 - base7
-                    diff_norm = float(torch.linalg.norm(diff))
-                    diff_mean = float(diff.abs().mean())
-                    diff_max = float(diff.abs().max())
-                    diff_per_dim = diff.mean(dim=tuple(range(diff.ndim - 1))).tolist()
-                    base7_per_dim = base7.mean(dim=tuple(range(base7.ndim - 1))).tolist()
-                    base7_list = base7.tolist()
-                    raise ValueError(f"diff_per_dim={diff_per_dim}, base7_per_dim={base7_per_dim}, base7={base7_list}, base7_shape={base7.shape}")
-                    z_mean = float(updated7[..., 2].mean())
-                    grip_mean = float(updated7[..., 6].mean())
-                    logging.info(
-                        "[kbnn_debug] step=%d base_norm=%.6f out_norm=%.6f diff_norm=%.6f diff_mean=%.6f diff_max=%.6f diff_per_dim=%s z_mean=%.6f grip_mean=%.6f",
-                        self._debug_step,
-                        base_norm,
-                        out_norm,
-                        diff_norm,
-                        diff_mean,
-                        diff_max,
-                        [f"{v:.6f}" for v in diff_per_dim],
-                        z_mean,
-                        grip_mean,
-                    )
->>>>>>> Stashed changes
         return out
 
 
