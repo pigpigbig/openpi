@@ -21,16 +21,11 @@ from openpi.training import config as _config
 # step 0: run 50 tests for checkpoint 58 <- Goal for Feb 6
 # step 1: run 50 tests each, for each checkpoint from 18 to 58
 # step 2: test the same thing on conventional NN
-class DummyKBNNResidualRotationHead(torch.nn.Module):
-    """Apply (pi05 + kbnn(pi05)) -> rotate -> pad to 32 dims.
-
-    The "KBNN" here is a dummy 7->7 module that operates on the pi05 output
-    (first 7 dims of the 32-dim action).
-    """
+class KBNNRotationProcessor(torch.nn.Module):
+    """Apply (pi05 actions + kbnn(pi05 actions)) -> rotate -> pad to 32 dims."""
 
     def __init__(
         self,
-        base_head: torch.nn.Module,
         rotation_matrix: torch.Tensor | None,
         kbnn_scale: float = 1.0,
         disable_kbnn: bool = False,
@@ -42,7 +37,6 @@ class DummyKBNNResidualRotationHead(torch.nn.Module):
         kbnn_model: KBNN | None = None,
     ):
         super().__init__()
-        self.base_head = base_head
         self.rotation_matrix = rotation_matrix
         self.kbnn_scale = float(kbnn_scale)
         self.disable_kbnn = disable_kbnn
@@ -88,9 +82,8 @@ class DummyKBNNResidualRotationHead(torch.nn.Module):
         return y
 
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        base = self.base_head(x)
-        base7 = base[..., :7]
+    def forward(self, actions: torch.Tensor) -> torch.Tensor:
+        base7 = actions[..., :7]
         if self.disable_kbnn:
             updated7 = base7
         else:
@@ -107,34 +100,9 @@ class DummyKBNNResidualRotationHead(torch.nn.Module):
             else:
                 raise ValueError(f"Expected 2D or 3D action tensor, got {updated7.shape}")
 
-        out = torch.zeros_like(base)
+        out = actions.clone()
         out[..., :7] = updated7
 
-        if self._debug_every > 0:
-            self._debug_step += 1
-            if self._debug_step % self._debug_every == 0:
-                with torch.no_grad():
-                    base_norm = float(torch.linalg.norm(base))
-                    out_norm = float(torch.linalg.norm(out))
-                    diff = updated7 - base7
-                    diff_norm = float(torch.linalg.norm(diff))
-                    diff_mean = float(diff.abs().mean())
-                    diff_max = float(diff.abs().max())
-                    diff_per_dim = diff.mean(dim=tuple(range(diff.ndim - 1))).tolist()
-                    z_mean = float(updated7[..., 2].mean())
-                    grip_mean = float(updated7[..., 6].mean())
-                    logging.info(
-                        "[kbnn_debug] step=%d base_norm=%.6f out_norm=%.6f diff_norm=%.6f diff_mean=%.6f diff_max=%.6f diff_per_dim=%s z_mean=%.6f grip_mean=%.6f",
-                        self._debug_step,
-                        base_norm,
-                        out_norm,
-                        diff_norm,
-                        diff_mean,
-                        diff_max,
-                        [f"{v:.6f}" for v in diff_per_dim],
-                        z_mean,
-                        grip_mean,
-                    )
         return out
 
 
@@ -249,8 +217,7 @@ def main(args: Args) -> None:
         kbnn_out_mean = kbnn_out_mean.to(model_device)
     if kbnn_out_std is not None:
         kbnn_out_std = kbnn_out_std.to(model_device)
-    action_head = DummyKBNNResidualRotationHead(
-        base_head=model.action_out_proj,
+    processor = KBNNRotationProcessor(
         rotation_matrix=rotation_tensor,
         kbnn_scale=args.kbnn_scale,
         disable_kbnn=args.disable_kbnn,
@@ -261,8 +228,46 @@ def main(args: Args) -> None:
         kbnn_out_std=kbnn_out_std,
         kbnn_model=kbnn_model,
     )
-    action_head = action_head.to(model_device)
-    model.action_out_proj = action_head
+    processor = processor.to(model_device)
+
+    orig_sample_actions = policy._sample_actions  # noqa: SLF001
+    debug_every = max(0, int(args.debug_every))
+    debug_step = 0
+
+    def _sample_actions_with_kbnn(device, observation, **kwargs):
+        nonlocal debug_step
+        actions = orig_sample_actions(device, observation, **kwargs)
+        out = processor(actions)
+        if debug_every > 0:
+            debug_step += 1
+            if debug_step % debug_every == 0:
+                with torch.no_grad():
+                    base7 = actions[..., :7]
+                    updated7 = out[..., :7]
+                    diff = updated7 - base7
+                    diff_norm = float(torch.linalg.norm(diff))
+                    diff_mean = float(diff.abs().mean())
+                    diff_max = float(diff.abs().max())
+                    diff_per_dim = diff.mean(dim=tuple(range(diff.ndim - 1))).tolist()
+                    base_norm = float(torch.linalg.norm(base7))
+                    out_norm = float(torch.linalg.norm(updated7))
+                    z_mean = float(updated7[..., 2].mean())
+                    grip_mean = float(updated7[..., 6].mean())
+                    logging.info(
+                        "[kbnn_debug] step=%d base_norm=%.6f out_norm=%.6f diff_norm=%.6f diff_mean=%.6f diff_max=%.6f diff_per_dim=%s z_mean=%.6f grip_mean=%.6f",
+                        debug_step,
+                        base_norm,
+                        out_norm,
+                        diff_norm,
+                        diff_mean,
+                        diff_max,
+                        [f"{v:.6f}" for v in diff_per_dim],
+                        z_mean,
+                        grip_mean,
+                    )
+        return out
+
+    policy._sample_actions = _sample_actions_with_kbnn  # noqa: SLF001
 
     # Record the policy's behavior.
     if args.record:
