@@ -106,8 +106,20 @@ class NNRotationProcessor(torch.nn.Module):
 
 
 def _load_nn_checkpoint(path: str) -> dict:
-    ckpt = torch.load(path, map_location="cpu")
-    return ckpt
+    return torch.load(path, map_location="cpu")
+
+
+def _looks_like_state_dict(obj: dict) -> bool:
+    if not isinstance(obj, dict) or not obj:
+        return False
+    for key, value in obj.items():
+        if not isinstance(key, str):
+            return False
+        if not torch.is_tensor(value):
+            return False
+        if not (key.endswith(".weight") or key.endswith(".bias")):
+            return False
+    return True
 
 
 @dataclasses.dataclass
@@ -192,9 +204,13 @@ def main(args: Args) -> None:
             if key in ckpt:
                 state = ckpt[key]
                 break
+        if state is None and _looks_like_state_dict(ckpt):
+            state = ckpt
         if state is None:
             raise ValueError(
-                f"{args.nn_checkpoint} missing NN weights. Expected one of: nn_state, model_state, state_dict, mlp_state"
+                f"{args.nn_checkpoint} missing NN weights. "
+                "Expected one of: nn_state, model_state, state_dict, mlp_state, "
+                "or a raw state_dict (fc*.weight/bias)."
             )
         nn_model = SimpleNN(7, 7).to(model_device)
         nn_model.load_state_dict(state)
