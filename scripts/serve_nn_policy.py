@@ -259,7 +259,7 @@ def main(args: Args) -> None:
                     diff_max = float(diff.abs().max())
                     diff_per_dim = diff.mean(dim=tuple(range(diff.ndim - 1))).tolist()
                     diff_sample = diff.detach().cpu().tolist()
-                    logging.info("[nn_debug] step=%d diff=%s", debug_step, diff_per_dim)
+                    logging.info("[nn_debug] step=%d diff=%s", debug_step, diff_sample)
         return out
 
     policy._sample_actions = _sample_actions_with_nn  # noqa: SLF001
