@@ -258,24 +258,8 @@ def main(args: Args) -> None:
                     diff_mean = float(diff.abs().mean())
                     diff_max = float(diff.abs().max())
                     diff_per_dim = diff.mean(dim=tuple(range(diff.ndim - 1))).tolist()
-                    base7_sample = base7.detach().cpu().tolist()
-                    base_norm = float(torch.linalg.norm(base7))
-                    out_norm = float(torch.linalg.norm(updated7))
-                    z_mean = float(updated7[..., 2].mean())
-                    grip_mean = float(updated7[..., 6].mean())
-                    logging.info(
-                        "[nn_debug] step=%d base_norm=%.6f out_norm=%.6f diff_norm=%.6f diff_mean=%.6f diff_max=%.6f diff_per_dim=%s z_mean=%.6f grip_mean=%.6f",
-                        debug_step,
-                        base_norm,
-                        out_norm,
-                        diff_norm,
-                        diff_mean,
-                        diff_max,
-                        [f"{v:.6f}" for v in diff_per_dim],
-                        z_mean,
-                        grip_mean,
-                    )
-                    logging.info("[nn_debug] base7=%s", base7_sample)
+                    diff_sample = diff.detach().cpu().tolist()
+                    logging.info("[nn_debug] step=%d diff=%s", debug_step, diff_sample)
         return out
 
     policy._sample_actions = _sample_actions_with_nn  # noqa: SLF001
