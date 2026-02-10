@@ -200,7 +200,7 @@ def main(args: Args) -> None:
             args.nn_out_std = ckpt["target_std"].reshape(-1).tolist()
 
         state = None
-        for key in ("nn_state", "model_state", "state_dict", "mlp_state"):
+        for key in ("nn_state", "model_state", "state_dict", "mlp_state", "model_state_dict"):
             if key in ckpt:
                 state = ckpt[key]
                 break
