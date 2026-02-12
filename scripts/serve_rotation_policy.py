@@ -14,13 +14,9 @@ from openpi.policies import policy_config as _policy_config
 from openpi.serving import websocket_policy_server
 from openpi.training import config as _config
 
-# TODO: Change to run with 100 KBNN checkpoints and plot them, rather than running one at the each time
-# See train_kbnn_from_action for training detail
-# See checkpoints in kbnn_weights_step_0
-# step -1: apply normalization and denormalization for input and output of kbnn
-# step 0: run 50 tests for checkpoint 58 <- Goal for Feb 6
-# step 1: run 50 tests each, for each checkpoint from 18 to 58
-# step 2: test the same thing on conventional NN
+# run checkpoints 65 to 295, 50 tests each, test step % 5 == 0
+
+
 class KBNNRotationProcessor(torch.nn.Module):
     """Apply (pi05 actions + kbnn(pi05 actions)) -> rotate -> pad to 32 dims."""
 
@@ -85,7 +81,7 @@ class KBNNRotationProcessor(torch.nn.Module):
     def forward(self, actions: torch.Tensor) -> torch.Tensor:
         base7 = actions[..., :7]
         if self.disable_kbnn:
-            updated7 = base7
+            updated7 = base7 + torch.randn_like(base7) * 0.1
         else:
             updated7 = base7 + self._kbnn(base7)
 
@@ -252,18 +248,20 @@ def main(args: Args) -> None:
                     out_norm = float(torch.linalg.norm(updated7))
                     z_mean = float(updated7[..., 2].mean())
                     grip_mean = float(updated7[..., 6].mean())
-                    logging.info(
-                        "[kbnn_debug] step=%d base_norm=%.6f out_norm=%.6f diff_norm=%.6f diff_mean=%.6f diff_max=%.6f diff_per_dim=%s z_mean=%.6f grip_mean=%.6f",
-                        debug_step,
-                        base_norm,
-                        out_norm,
-                        diff_norm,
-                        diff_mean,
-                        diff_max,
-                        [f"{v:.6f}" for v in diff_per_dim],
-                        z_mean,
-                        grip_mean,
-                    )
+                    diff_sample = diff.detach().cpu().tolist()
+                    logging.info("[kbnn_debug] step=%d diff=%s", debug_step, diff_sample)
+                    # logging.info(
+                    #     "[kbnn_debug] step=%d base_norm=%.6f out_norm=%.6f diff_norm=%.6f diff_mean=%.6f diff_max=%.6f diff_per_dim=%s z_mean=%.6f grip_mean=%.6f",
+                    #     debug_step,
+                    #     base_norm,
+                    #     out_norm,
+                    #     diff_norm,
+                    #     diff_mean,
+                    #     diff_max,
+                    #     [f"{v:.6f}" for v in diff_per_dim],
+                    #     z_mean,
+                    #     grip_mean,
+                    # )
         return out
 
     policy._sample_actions = _sample_actions_with_kbnn  # noqa: SLF001

@@ -13,15 +13,15 @@ from openpi.policies import policy_config as _policy_config
 from openpi.serving import websocket_policy_server
 from openpi.training import config as _config
 
-
+# run checkpoints 65 to 295, 50 tests each
 class SimpleNN(torch.nn.Module):
     """7 -> 50 -> 40 -> 7 MLP (matches train_kbnn_from_distribution.py)."""
 
     def __init__(self, input_dim: int = 7, output_dim: int = 7):
         super().__init__()
-        self.fc1 = torch.nn.Linear(input_dim, 50)
-        self.fc2 = torch.nn.Linear(50, 40)
-        self.fc3 = torch.nn.Linear(40, output_dim)
+        self.fc1 = torch.nn.Linear(input_dim, 7)
+        self.fc2 = torch.nn.Linear(7, 7)
+        self.fc3 = torch.nn.Linear(7, output_dim)
         self.relu = torch.nn.ReLU()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
