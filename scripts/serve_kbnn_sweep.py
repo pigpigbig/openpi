@@ -219,6 +219,7 @@ def main() -> None:
     if not steps:
         raise ValueError("No steps to run; check step_start/step_end/step_stride.")
 
+    results: list[tuple[int, float, int]] = []
     for step in steps:
         checkpoint = ckpt_dir / f"kbnn_weights_step_{step}.pt"
         if not checkpoint.exists():
@@ -237,6 +238,7 @@ def main() -> None:
             total_episodes = summary.get("total_episodes")
             env_rates = summary.get("env_rates", {})
             if total_success is not None and total_episodes is not None:
+                results.append((step, float(total_success), int(total_episodes)))
                 logging.info(
                     "[kbnn_sweep] step=%d total_success=%.3f total_episodes=%d env_rates=%s",
                     step,
@@ -248,6 +250,11 @@ def main() -> None:
                 logging.info("[kbnn_sweep] step=%d eval finished (summary unavailable)", step)
         finally:
             _stop_server(server_proc)
+
+    if results:
+        logging.info("[kbnn_sweep] Summary (step -> success_rate over total_episodes):")
+        for step, success_rate, total_episodes in results:
+            logging.info("[kbnn_sweep] step=%d success=%.3f episodes=%d", step, success_rate, total_episodes)
 
 
 if __name__ == "__main__":
