@@ -152,34 +152,26 @@ def _parse_eval_line(line: str, summary: dict) -> bool:
     text = line.strip()
     if not text:
         return False
-    if text.startswith("Success:"):
-        return True
-    if text.startswith("# episodes completed so far:"):
-        return True
-    if text.startswith("# successes:"):
-        return True
-    if text.startswith("Current task success rate:"):
-        return True
-    if text.startswith("Current total success rate:"):
-        return True
-    if text.startswith("Total success rate:"):
-        # also forwarded below after parsing
-        return True
-    if text.startswith("Total episodes:"):
-        # also forwarded below after parsing
-        return True
+    tokens = (
+        "Success:",
+        "# episodes completed so far:",
+        "# successes:",
+        "Current task success rate:",
+        "Current total success rate:",
+        "Total success rate:",
+        "Total episodes:",
+    )
+    should_log = any(token in text for token in tokens)
     if "Total success rate:" in text:
         try:
             summary["total_success_rate"] = float(text.split("Total success rate:")[1].strip())
         except ValueError:
             pass
-        return False
     if "Total episodes:" in text:
         try:
             summary["total_episodes"] = int(text.split("Total episodes:")[1].strip())
         except ValueError:
             pass
-        return False
     if text.startswith("[camshift] Env ") and "success rate:" in text:
         try:
             prefix, rate_str = text.split("success rate:")
@@ -188,8 +180,7 @@ def _parse_eval_line(line: str, summary: dict) -> bool:
             summary.setdefault("env_rates", {})[env_id] = float(rate_str.strip())
         except ValueError:
             pass
-        return False
-    return False
+    return should_log
 
 
 def _run_eval(args: Args, video_out_path: str) -> dict:
