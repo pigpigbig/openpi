@@ -117,7 +117,8 @@ def main(args: Args) -> None:
 
         for episode_idx in tqdm.tqdm(range(args.num_trials_per_task)):
             env.reset()
-            obs = env.set_init_state(initial_states[episode_idx])
+            init_state = initial_states[episode_idx % len(initial_states)]
+            obs = env.set_init_state(init_state)
 
             action_plan = collections.deque()
             t = 0
