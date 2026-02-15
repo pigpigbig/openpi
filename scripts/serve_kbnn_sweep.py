@@ -1,5 +1,6 @@
 import dataclasses
 import logging
+import os
 import subprocess
 import sys
 import time
@@ -12,16 +13,12 @@ import tyro
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-EVAL_DIR = REPO_ROOT / "examples" / "libero"
-if str(EVAL_DIR) not in sys.path:
-    sys.path.insert(0, str(EVAL_DIR))
-import main_camshift_env as _eval_libero  # noqa: E402
 
 
 @dataclasses.dataclass
 class Args:
     # Policy server settings
-    port: int = 8000
+    port: int = 7777
     host: str = "127.0.0.1"
     policy_config: str = "pi05_libero"
     policy_dir: str = ""
@@ -37,6 +34,8 @@ class Args:
     disable_kbnn: bool = False
 
     # LIBERO eval settings (uses main_camshift_env with zero camshift)
+    libero_python: str = "examples/libero/.venv/bin/python"
+    libero_script: str = "examples/libero/main_camshift_env.py"
     task_suite_name: str = "libero_10"
     num_trials_per_task: int = 50
     env_ids: Optional[List[int]] = None
@@ -105,25 +104,48 @@ def _stop_server(proc: subprocess.Popen) -> None:
         proc.wait(timeout=5)
 
 
-def _build_eval_args(args: Args, video_out_path: str) -> _eval_libero.Args:
-    return _eval_libero.Args(
-        host=args.host,
-        port=args.port,
-        resize_size=args.resize_size,
-        replan_steps=args.replan_steps,
-        task_suite_name=args.task_suite_name,
-        num_steps_wait=args.num_steps_wait,
-        num_trials_per_task=args.num_trials_per_task,
-        env_ids=args.env_ids,
-        camera_pitch_deg=args.camera_pitch_deg,
-        camera_yaw_deg=args.camera_yaw_deg,
-        camera_fovy_deg=args.camera_fovy_deg,
-        camera_radius_scale=args.camera_radius_scale,
-        video_out_path=video_out_path,
-        save_video_every=args.save_video_every,
-        save_videos=args.save_videos,
-        seed=args.seed,
-    )
+def _eval_command(args: Args, video_out_path: str) -> list[str]:
+    cmd = [
+        str(REPO_ROOT / args.libero_python),
+        str(REPO_ROOT / args.libero_script),
+        "--args.host",
+        args.host,
+        "--args.port",
+        str(args.port),
+        "--args.task-suite-name",
+        args.task_suite_name,
+        "--args.num-trials-per-task",
+        str(args.num_trials_per_task),
+        "--args.num-steps-wait",
+        str(args.num_steps_wait),
+        "--args.resize-size",
+        str(args.resize_size),
+        "--args.replan-steps",
+        str(args.replan_steps),
+        "--args.video-out-path",
+        video_out_path,
+        "--args.save-video-every",
+        str(args.save_video_every),
+        "--args.camera-pitch-deg",
+        str(args.camera_pitch_deg),
+        "--args.camera-yaw-deg",
+        str(args.camera_yaw_deg),
+        "--args.camera-radius-scale",
+        str(args.camera_radius_scale),
+        "--args.seed",
+        str(args.seed),
+    ]
+    if args.env_ids:
+        cmd.extend(["--args.env-ids", *[str(v) for v in args.env_ids]])
+    if args.camera_fovy_deg is None:
+        cmd.extend(["--args.camera-fovy-deg", "None"])
+    else:
+        cmd.extend(["--args.camera-fovy-deg", str(args.camera_fovy_deg)])
+    if args.save_videos:
+        cmd.append("--args.save-videos")
+    else:
+        cmd.append("--args.no-save-videos")
+    return cmd
 
 
 def main() -> None:
@@ -154,16 +176,12 @@ def main() -> None:
                 continue
 
             video_out = str(Path(args.video_out_base) / f"step_{step}")
-            eval_args = _build_eval_args(args, video_out)
-            summary = _eval_libero.eval_libero(eval_args)
-            env_rates = {k: round(v, 3) for k, v in summary["env_success_rates"].items()}
-            logging.info(
-                "[kbnn_sweep] step=%d total_success=%.3f total_episodes=%d env_rates=%s",
-                step,
-                summary["total_success_rate"],
-                summary["total_episodes"],
-                env_rates,
-            )
+            eval_cmd = _eval_command(args, video_out)
+            env = os.environ.copy()
+            extra_path = str(REPO_ROOT / "third_party" / "libero")
+            env["PYTHONPATH"] = f"{env.get('PYTHONPATH', '')}:{extra_path}"
+            logging.info("[kbnn_sweep] Running eval: %s", " ".join(eval_cmd))
+            subprocess.run(eval_cmd, check=True, env=env)
         finally:
             _stop_server(server_proc)
 
