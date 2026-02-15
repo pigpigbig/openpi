@@ -148,22 +148,38 @@ def _eval_command(args: Args, video_out_path: str) -> list[str]:
     return cmd
 
 
-def _parse_eval_line(line: str, summary: dict) -> None:
+def _parse_eval_line(line: str, summary: dict) -> bool:
     text = line.strip()
     if not text:
-        return
+        return False
+    if text.startswith("Success:"):
+        return True
+    if text.startswith("# episodes completed so far:"):
+        return True
+    if text.startswith("# successes:"):
+        return True
+    if text.startswith("Current task success rate:"):
+        return True
+    if text.startswith("Current total success rate:"):
+        return True
+    if text.startswith("Total success rate:"):
+        # also forwarded below after parsing
+        return True
+    if text.startswith("Total episodes:"):
+        # also forwarded below after parsing
+        return True
     if "Total success rate:" in text:
         try:
             summary["total_success_rate"] = float(text.split("Total success rate:")[1].strip())
         except ValueError:
             pass
-        return
+        return False
     if "Total episodes:" in text:
         try:
             summary["total_episodes"] = int(text.split("Total episodes:")[1].strip())
         except ValueError:
             pass
-        return
+        return False
     if text.startswith("[camshift] Env ") and "success rate:" in text:
         try:
             prefix, rate_str = text.split("success rate:")
@@ -172,6 +188,8 @@ def _parse_eval_line(line: str, summary: dict) -> None:
             summary.setdefault("env_rates", {})[env_id] = float(rate_str.strip())
         except ValueError:
             pass
+        return False
+    return False
 
 
 def _run_eval(args: Args, video_out_path: str) -> dict:
@@ -192,7 +210,8 @@ def _run_eval(args: Args, video_out_path: str) -> dict:
     if proc.stdout:
         for line in proc.stdout:
             output_lines.append(line)
-            _parse_eval_line(line, summary)
+            if _parse_eval_line(line, summary):
+                logging.info("[kbnn_sweep] %s", line.strip())
     ret = proc.wait()
     if ret != 0:
         raise subprocess.CalledProcessError(ret, eval_cmd, output="".join(output_lines))
