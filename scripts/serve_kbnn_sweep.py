@@ -43,8 +43,8 @@ class Args:
     resize_size: int = 224
     replan_steps: int = 5
     seed: int = 7
-    save_videos: bool = False
-    save_video_every: int = 1
+    save_videos: bool = True
+    save_video_every: int = 5
     video_out_base: str = "data/libero/videos_kbnn_sweep"
     camera_pitch_deg: float = 0.0
     camera_yaw_deg: float = 0.0
