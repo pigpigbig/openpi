@@ -148,6 +148,57 @@ def _eval_command(args: Args, video_out_path: str) -> list[str]:
     return cmd
 
 
+def _parse_eval_line(line: str, summary: dict) -> None:
+    text = line.strip()
+    if not text:
+        return
+    if "Total success rate:" in text:
+        try:
+            summary["total_success_rate"] = float(text.split("Total success rate:")[1].strip())
+        except ValueError:
+            pass
+        return
+    if "Total episodes:" in text:
+        try:
+            summary["total_episodes"] = int(text.split("Total episodes:")[1].strip())
+        except ValueError:
+            pass
+        return
+    if text.startswith("[camshift] Env ") and "success rate:" in text:
+        try:
+            prefix, rate_str = text.split("success rate:")
+            env_str = prefix.replace("[camshift] Env", "").replace("success rate", "").strip()
+            env_id = int(env_str)
+            summary.setdefault("env_rates", {})[env_id] = float(rate_str.strip())
+        except ValueError:
+            pass
+
+
+def _run_eval(args: Args, video_out_path: str) -> dict:
+    eval_cmd = _eval_command(args, video_out_path)
+    env = os.environ.copy()
+    extra_path = str(REPO_ROOT / "third_party" / "libero")
+    env["PYTHONPATH"] = f"{env.get('PYTHONPATH', '')}:{extra_path}"
+
+    summary: dict = {"env_rates": {}}
+    proc = subprocess.Popen(
+        eval_cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        env=env,
+    )
+    output_lines: list[str] = []
+    if proc.stdout:
+        for line in proc.stdout:
+            output_lines.append(line)
+            _parse_eval_line(line, summary)
+    ret = proc.wait()
+    if ret != 0:
+        raise subprocess.CalledProcessError(ret, eval_cmd, output="".join(output_lines))
+    return summary
+
+
 def main() -> None:
     args = tyro.cli(Args)
     if not args.policy_dir:
@@ -158,7 +209,13 @@ def main() -> None:
     if not ckpt_dir.exists():
         raise FileNotFoundError(f"Checkpoint dir not found: {ckpt_dir}")
 
-    steps = list(range(args.step_start, args.step_end + 1, args.step_stride))
+    step_stride = int(args.step_stride)
+    if step_stride == 0:
+        raise ValueError("step_stride must be non-zero.")
+    if args.step_start <= args.step_end:
+        steps = list(range(args.step_start, args.step_end + 1, abs(step_stride)))
+    else:
+        steps = list(range(args.step_start, args.step_end - 1, -abs(step_stride)))
     if not steps:
         raise ValueError("No steps to run; check step_start/step_end/step_stride.")
 
@@ -168,7 +225,6 @@ def main() -> None:
             logging.warning("[kbnn_sweep] missing checkpoint: %s", checkpoint)
             continue
 
-        logging.info("[kbnn_sweep] Starting step=%d checkpoint=%s", step, checkpoint)
         server_proc = _start_server(args, checkpoint)
         try:
             if not _wait_for_server(args.host, args.port, args.wait_timeout_s):
@@ -176,12 +232,20 @@ def main() -> None:
                 continue
 
             video_out = str(Path(args.video_out_base) / f"step_{step}")
-            eval_cmd = _eval_command(args, video_out)
-            env = os.environ.copy()
-            extra_path = str(REPO_ROOT / "third_party" / "libero")
-            env["PYTHONPATH"] = f"{env.get('PYTHONPATH', '')}:{extra_path}"
-            logging.info("[kbnn_sweep] Running eval: %s", " ".join(eval_cmd))
-            subprocess.run(eval_cmd, check=True, env=env)
+            summary = _run_eval(args, video_out)
+            total_success = summary.get("total_success_rate")
+            total_episodes = summary.get("total_episodes")
+            env_rates = summary.get("env_rates", {})
+            if total_success is not None and total_episodes is not None:
+                logging.info(
+                    "[kbnn_sweep] step=%d total_success=%.3f total_episodes=%d env_rates=%s",
+                    step,
+                    total_success,
+                    total_episodes,
+                    {k: round(v, 3) for k, v in env_rates.items()},
+                )
+            else:
+                logging.info("[kbnn_sweep] step=%d eval finished (summary unavailable)", step)
         finally:
             _stop_server(server_proc)
 
