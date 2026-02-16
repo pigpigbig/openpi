@@ -69,7 +69,7 @@ def _wait_for_server(host: str, port: int, timeout_s: float) -> bool:
 
 
 def _start_server(args: Args, checkpoint_path: Path) -> subprocess.Popen:
-    serve_script = REPO_ROOT / "scripts" / "serve_nn_policy.py"
+    serve_script = REPO_ROOT / "scripts" / "serve_nn_large_policy.py"
     cmd = [
         sys.executable,
         str(serve_script),
