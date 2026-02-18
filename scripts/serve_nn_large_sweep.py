@@ -46,6 +46,7 @@ class Args:
     save_videos: bool = True
     save_video_every: int = 5
     video_out_base: str = "data/libero/videos_nn_large_sweep"
+    results_filename: str = "sweep_results.txt"
     camera_pitch_deg: float = 0.0
     camera_yaw_deg: float = 0.0
     camera_fovy_deg: Optional[float] = None
@@ -209,6 +210,11 @@ def _run_eval(args: Args, video_out_path: str) -> dict:
     return summary
 
 
+def _append_line(path: Path, text: str) -> None:
+    with path.open("a", encoding="utf-8") as f:
+        f.write(text + "\n")
+
+
 def main() -> None:
     args = tyro.cli(Args)
     if not args.policy_dir:
@@ -218,6 +224,16 @@ def main() -> None:
     ckpt_dir = Path(args.nn_checkpoint_dir)
     if not ckpt_dir.exists():
         raise FileNotFoundError(f"Checkpoint dir not found: {ckpt_dir}")
+    video_base = Path(args.video_out_base)
+    video_base.mkdir(parents=True, exist_ok=True)
+    results_file = video_base / args.results_filename
+    header = (
+        f"[nn_large_sweep] run_start policy_dir={args.policy_dir} "
+        f"checkpoint_dir={ckpt_dir} steps={args.step_start}:{args.step_end}:{args.step_stride} "
+        f"task_suite={args.task_suite_name} trials={args.num_trials_per_task} env_ids={args.env_ids}"
+    )
+    logging.info(header)
+    _append_line(results_file, header)
 
     step_stride = int(args.step_stride)
     if step_stride == 0:
@@ -249,22 +265,28 @@ def main() -> None:
             env_rates = summary.get("env_rates", {})
             if total_success is not None and total_episodes is not None:
                 results.append((step, float(total_success), int(total_episodes)))
-                logging.info(
-                    "[nn_large_sweep] step=%d total_success=%.3f total_episodes=%d env_rates=%s",
-                    step,
-                    total_success,
-                    total_episodes,
-                    {k: round(v, 3) for k, v in env_rates.items()},
+                line = (
+                    f"[nn_large_sweep] step={step} total_success={float(total_success):.3f} "
+                    f"total_episodes={int(total_episodes)} "
+                    f"env_rates={ {k: round(v, 3) for k, v in env_rates.items()} }"
                 )
+                logging.info(line)
+                _append_line(results_file, line)
             else:
-                logging.info("[nn_large_sweep] step=%d eval finished (summary unavailable)", step)
+                line = f"[nn_large_sweep] step={step} eval finished (summary unavailable)"
+                logging.info(line)
+                _append_line(results_file, line)
         finally:
             _stop_server(server_proc)
 
     if results:
-        logging.info("[nn_large_sweep] Summary (step -> success_rate over total_episodes):")
+        line = "[nn_large_sweep] Summary (step -> success_rate over total_episodes):"
+        logging.info(line)
+        _append_line(results_file, line)
         for step, success_rate, total_episodes in results:
-            logging.info("[nn_large_sweep] step=%d success=%.3f episodes=%d", step, success_rate, total_episodes)
+            line = f"[nn_large_sweep] step={step} success={success_rate:.3f} episodes={total_episodes}"
+            logging.info(line)
+            _append_line(results_file, line)
 
 
 if __name__ == "__main__":
