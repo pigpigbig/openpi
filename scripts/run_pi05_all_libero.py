@@ -43,9 +43,9 @@ class Args:
     camera_radius_scale: float = 1.0
 
     # Output
-    save_videos: bool = False
+    save_videos: bool = True
     save_video_every: int = 1
-    output_root: str = "data/libero/pi05_all_suites_29999"
+    output_root: str = "data/libero/pi05_all_suites_29999_videos"
     results_filename: str = "summary.txt"
     server_log_filename: str = "server.log"
 
