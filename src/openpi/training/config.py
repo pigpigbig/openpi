@@ -20,6 +20,7 @@ import openpi.models.tokenizer as _tokenizer
 import openpi.policies.aloha_policy as aloha_policy
 import openpi.policies.droid_policy as droid_policy
 import openpi.policies.libero_policy as libero_policy
+import openpi.policies.unitree_g1_policy as unitree_g1_policy
 import openpi.shared.download as _download
 import openpi.shared.normalize as _normalize
 import openpi.training.droid_rlds_dataset as droid_rlds_dataset
@@ -450,6 +451,57 @@ class LeRobotDROIDDataConfig(DataConfigFactory):
             repack_transforms=repack_transform,
             data_transforms=data_transforms,
             model_transforms=model_transforms,
+        )
+
+
+@dataclasses.dataclass(frozen=True)
+class LeRobotUnitreeG1DataConfig(DataConfigFactory):
+    """OpenPI adapter for Unitree G1 datasets stored in LeRobot format."""
+
+    action_dim: int = 28
+    use_delta_actions: bool = True
+    default_prompt: str | None = None
+    base_image_keys: Sequence[str] = (
+        "observation.images.cam_left_high",
+        "observation.images.cam_high",
+        "observation.images.cam_right_high",
+    )
+    left_wrist_image_keys: Sequence[str] = (
+        "observation.images.cam_left_wrist",
+        "observation.images.cam_wrist",
+    )
+    right_wrist_image_keys: Sequence[str] = ("observation.images.cam_right_wrist",)
+    action_sequence_keys: Sequence[str] = ("action",)
+
+    @override
+    def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
+        data_transforms = _transforms.Group(
+            inputs=[
+                unitree_g1_policy.UnitreeG1Inputs(
+                    model_type=model_config.model_type,
+                    base_image_keys=self.base_image_keys,
+                    left_wrist_image_keys=self.left_wrist_image_keys,
+                    right_wrist_image_keys=self.right_wrist_image_keys,
+                    action_key=self.action_sequence_keys[0],
+                )
+            ],
+            outputs=[unitree_g1_policy.UnitreeG1Outputs(action_dim=self.action_dim)],
+        )
+
+        if self.use_delta_actions:
+            delta_action_mask = _transforms.make_bool_mask(self.action_dim)
+            data_transforms = data_transforms.push(
+                inputs=[_transforms.DeltaActions(delta_action_mask)],
+                outputs=[_transforms.AbsoluteActions(delta_action_mask)],
+            )
+
+        model_transforms = ModelTransformFactory(default_prompt=self.default_prompt)(model_config)
+
+        return dataclasses.replace(
+            self.create_base_config(assets_dirs, model_config),
+            data_transforms=data_transforms,
+            model_transforms=model_transforms,
+            action_sequence_keys=self.action_sequence_keys,
         )
 
 
@@ -904,6 +956,42 @@ _CONFIGS = [
             ),
         ),
         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_droid/params"),
+        num_train_steps=20_000,
+        batch_size=32,
+    ),
+    TrainConfig(
+        # Example config for fine-tuning pi05-base on a Unitree G1 Dex3 dataset.
+        name="pi05_unitree_g1_dex3_toastedbread",
+        model=pi0_config.Pi0Config(
+            pi05=True,
+            action_dim=32,
+            action_horizon=16,
+            discrete_state_input=False,
+        ),
+        data=LeRobotUnitreeG1DataConfig(
+            repo_id="unitreerobotics/G1_Dex3_ToastedBread_Dataset",
+            action_dim=28,
+            base_config=DataConfig(prompt_from_task=True),
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        num_train_steps=20_000,
+        batch_size=32,
+    ),
+    TrainConfig(
+        # Example config for fine-tuning pi05-base on a Unitree G1 Dex1 dataset.
+        name="pi05_unitree_g1_dex1_mount_camera",
+        model=pi0_config.Pi0Config(
+            pi05=True,
+            action_dim=32,
+            action_horizon=16,
+            discrete_state_input=False,
+        ),
+        data=LeRobotUnitreeG1DataConfig(
+            repo_id="unitreerobotics/G1_Dex1_MountCamera_Dataset",
+            action_dim=16,
+            base_config=DataConfig(prompt_from_task=True),
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
         num_train_steps=20_000,
         batch_size=32,
     ),
