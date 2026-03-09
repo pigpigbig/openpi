@@ -12,12 +12,12 @@
 #     scripts/slurm/sbatch_pi05_unitree_g1_toastbread.sh
 
 #SBATCH -J pi05_g1_toastbread
-#SBATCH -p defq
+#SBATCH -p HGPU
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64G
-#SBATCH --gres=gpu:h100:1
+#SBATCH --gres=gpu:h200:1
 #SBATCH --time=24:00:00
 #SBATCH -o slurm-%x-%j.out
 #SBATCH -e slurm-%x-%j.err
