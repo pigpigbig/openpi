@@ -25,7 +25,13 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd -- "${SCRIPT_DIR}/../.." && pwd)"
+# Under sbatch, BASH_SOURCE[0] points to Slurm's spooled copy of the script.
+# Use the original submission directory as the repo root unless explicitly overridden.
+REPO_ROOT="${REPO_ROOT:-${SLURM_SUBMIT_DIR:-}}"
+if [[ -z "${REPO_ROOT}" ]]; then
+    REPO_ROOT="$(cd -- "${SCRIPT_DIR}/../.." && pwd)"
+fi
+REPO_ROOT="$(cd -- "${REPO_ROOT}" && pwd)"
 PYTHON_BIN="${REPO_ROOT}/.venv/bin/python"
 
 CONFIG_NAME="pi05_unitree_g1_dex3_toastedbread"
