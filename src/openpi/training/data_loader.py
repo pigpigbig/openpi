@@ -138,8 +138,14 @@ def create_torch_dataset(
         return FakeDataset(model_config, num_samples=1024)
 
     dataset_meta = lerobot_dataset.LeRobotDatasetMetadata(repo_id)
+    episodes = None
+    # Some LeRobot caches contain both per-episode parquet files and aggregate chunk parquet files.
+    # When the metadata advertises per-episode paths, load those explicitly to avoid duplicated samples.
+    if "{episode_index" in dataset_meta.data_path:
+        episodes = list(range(dataset_meta.total_episodes))
     dataset = lerobot_dataset.LeRobotDataset(
         data_config.repo_id,
+        episodes=episodes,
         delta_timestamps={
             key: [t / dataset_meta.fps for t in range(action_horizon)] for key in data_config.action_sequence_keys
         },
