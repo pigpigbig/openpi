@@ -26,13 +26,14 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 # Under sbatch, BASH_SOURCE[0] points to Slurm's spooled copy of the script.
-# Use the original submission directory as the repo root unless explicitly overridden.
-REPO_ROOT="${REPO_ROOT:-${SLURM_SUBMIT_DIR:-}}"
-if [[ -z "${REPO_ROOT}" ]]; then
+# Prefer the git repo containing the submission directory.
+REPO_ROOT_CANDIDATE="${REPO_ROOT:-${SLURM_SUBMIT_DIR:-}}"
+if [[ -n "${REPO_ROOT_CANDIDATE}" ]] && git -C "${REPO_ROOT_CANDIDATE}" rev-parse --show-toplevel >/dev/null 2>&1; then
+    REPO_ROOT="$(git -C "${REPO_ROOT_CANDIDATE}" rev-parse --show-toplevel)"
+else
     REPO_ROOT="$(cd -- "${SCRIPT_DIR}/../.." && pwd)"
 fi
 REPO_ROOT="$(cd -- "${REPO_ROOT}" && pwd)"
-PYTHON_BIN="${REPO_ROOT}/.venv/bin/python"
 
 CONFIG_NAME="pi05_unitree_g1_dex3_toastedbread"
 DATASET_REPO="unitreerobotics/G1_Dex3_ToastedBread_Dataset"
@@ -45,12 +46,9 @@ PERSIST_ROOT="${PERSIST_ROOT:-/mnt/cephfs/cluster/dgx/users/${USER}/openpi}"
 CHECKPOINT_BASE_DIR="${CHECKPOINT_BASE_DIR:-${PERSIST_ROOT}/checkpoints}"
 WANDB_DIR="${WANDB_DIR:-${PERSIST_ROOT}/wandb}"
 JOB_SCRATCH="/scratch/${USER}/openpi/${SLURM_JOB_ID}"
-
-if [[ ! -x "${PYTHON_BIN}" ]]; then
-    echo "Expected virtualenv interpreter at ${PYTHON_BIN}"
-    echo "Create the openpi environment on the login node first."
-    exit 1
-fi
+JOB_VENV="${JOB_SCRATCH}/.venv"
+PERSIST_CACHE_ROOT="${PERSIST_CACHE_ROOT:-${PERSIST_ROOT}/cache}"
+export PATH="${HOME}/.local/bin:${PATH}"
 
 mkdir -p \
     "${JOB_SCRATCH}/tmp" \
@@ -58,6 +56,7 @@ mkdir -p \
     "${JOB_SCRATCH}/openpi-cache" \
     "${JOB_SCRATCH}/xdg-cache" \
     "${JOB_SCRATCH}/matplotlib" \
+    "${PERSIST_CACHE_ROOT}/uv" \
     "${CHECKPOINT_BASE_DIR}" \
     "${WANDB_DIR}"
 
@@ -73,6 +72,9 @@ export HF_HOME="${JOB_SCRATCH}/hf"
 export HF_HUB_CACHE="${HF_HOME}/hub"
 export HF_LEROBOT_HOME="${HF_HOME}/lerobot"
 export OPENPI_DATA_HOME="${JOB_SCRATCH}/openpi-cache"
+export UV_CACHE_DIR="${PERSIST_CACHE_ROOT}/uv"
+export UV_PROJECT_ENVIRONMENT="${JOB_VENV}"
+export UV_LINK_MODE=copy
 export XDG_CACHE_HOME="${JOB_SCRATCH}/xdg-cache"
 export MPLCONFIGDIR="${JOB_SCRATCH}/matplotlib"
 export WANDB_DIR
@@ -80,6 +82,7 @@ export WANDB_MODE
 export TOKENIZERS_PARALLELISM=false
 export PYTHONUNBUFFERED=1
 export XLA_PYTHON_CLIENT_MEM_FRACTION="${XLA_PYTHON_CLIENT_MEM_FRACTION:-0.90}"
+export GIT_LFS_SKIP_SMUDGE=1
 
 cd "${REPO_ROOT}"
 
@@ -89,6 +92,34 @@ echo "Scratch: ${JOB_SCRATCH}"
 echo "Checkpoint base: ${CHECKPOINT_BASE_DIR}"
 echo "Experiment: ${EXP_NAME}"
 echo "W&B mode: ${WANDB_MODE}"
+echo "Job venv: ${JOB_VENV}"
+
+if ! command -v uv >/dev/null 2>&1; then
+    echo "uv not found; installing to ${HOME}/.local/bin"
+    python3 -m pip install --user --upgrade uv
+fi
+
+if ! command -v uv >/dev/null 2>&1; then
+    echo "uv is still unavailable after installation attempt."
+    exit 1
+fi
+
+echo "uv: $(command -v uv)"
+uv --version
+
+echo "Creating job-local environment from pyproject/uv.lock"
+uv python install 3.11
+uv sync --frozen --no-dev
+uv pip install -e . --no-deps
+
+PYTHON_BIN="${JOB_VENV}/bin/python"
+if [[ ! -x "${PYTHON_BIN}" ]]; then
+    echo "Expected job python at ${PYTHON_BIN} after uv sync, but it was not created."
+    exit 1
+fi
+
+echo "Python: ${PYTHON_BIN}"
+"${PYTHON_BIN}" --version
 
 nvidia-smi
 "${PYTHON_BIN}" - <<'PY'
