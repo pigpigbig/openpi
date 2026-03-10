@@ -84,6 +84,19 @@ export PYTHONUNBUFFERED=1
 export XLA_PYTHON_CLIENT_MEM_FRACTION="${XLA_PYTHON_CLIENT_MEM_FRACTION:-0.90}"
 export GIT_LFS_SKIP_SMUDGE=1
 
+if ! command -v git-lfs >/dev/null 2>&1; then
+    echo "git-lfs not found; disabling LFS filters for dependency checkout"
+    export GIT_CONFIG_COUNT=4
+    export GIT_CONFIG_KEY_0=filter.lfs.process
+    export GIT_CONFIG_VALUE_0=
+    export GIT_CONFIG_KEY_1=filter.lfs.smudge
+    export GIT_CONFIG_VALUE_1=
+    export GIT_CONFIG_KEY_2=filter.lfs.clean
+    export GIT_CONFIG_VALUE_2=cat
+    export GIT_CONFIG_KEY_3=filter.lfs.required
+    export GIT_CONFIG_VALUE_3=false
+fi
+
 cd "${REPO_ROOT}"
 
 echo "Host: $(hostname)"
