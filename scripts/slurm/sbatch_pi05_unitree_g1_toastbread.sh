@@ -123,7 +123,6 @@ uv --version
 echo "Creating job-local environment from pyproject/uv.lock"
 uv python install 3.11
 uv sync --frozen --no-dev
-uv pip install -e . --no-deps
 
 PYTHON_BIN="${JOB_VENV}/bin/python"
 if [[ ! -x "${PYTHON_BIN}" ]]; then
