@@ -48,15 +48,17 @@ WANDB_DIR="${WANDB_DIR:-${PERSIST_ROOT}/wandb}"
 JOB_SCRATCH="/scratch/${USER}/openpi/${SLURM_JOB_ID}"
 JOB_VENV="${JOB_SCRATCH}/.venv"
 PERSIST_CACHE_ROOT="${PERSIST_CACHE_ROOT:-${PERSIST_ROOT}/cache}"
+PERSIST_HF_HOME="${PERSIST_HF_HOME:-${PERSIST_CACHE_ROOT}/huggingface}"
 export PATH="${HOME}/.local/bin:${PATH}"
 
 mkdir -p \
     "${JOB_SCRATCH}/tmp" \
-    "${JOB_SCRATCH}/hf" \
     "${JOB_SCRATCH}/openpi-cache" \
     "${JOB_SCRATCH}/xdg-cache" \
     "${JOB_SCRATCH}/matplotlib" \
     "${PERSIST_CACHE_ROOT}/uv" \
+    "${PERSIST_HF_HOME}/hub" \
+    "${PERSIST_HF_HOME}/lerobot" \
     "${CHECKPOINT_BASE_DIR}" \
     "${WANDB_DIR}"
 
@@ -68,9 +70,24 @@ module purge
 module load cuda12.6/toolkit cuda12.6/fft cuda12.6/blas cudnn9.4-cuda12.6
 
 export TMPDIR="${JOB_SCRATCH}/tmp"
-export HF_HOME="${JOB_SCRATCH}/hf"
+export HF_HOME="${PERSIST_HF_HOME}"
 export HF_HUB_CACHE="${HF_HOME}/hub"
 export HF_LEROBOT_HOME="${HF_HOME}/lerobot"
+if [[ -z "${HF_TOKEN:-}" ]]; then
+    for TOKEN_FILE in "${HOME}/.cache/huggingface/token" "${HOME}/.huggingface/token"; do
+        if [[ -f "${TOKEN_FILE}" ]]; then
+            HF_TOKEN="$(tr -d '\r\n' < "${TOKEN_FILE}")"
+            export HF_TOKEN
+            echo "Loaded HF token from ${TOKEN_FILE}"
+            break
+        fi
+    done
+fi
+if [[ -n "${HF_TOKEN:-}" ]]; then
+    echo "HF token is set for this job"
+else
+    echo "HF token not found; Hugging Face downloads may be rate-limited"
+fi
 export OPENPI_DATA_HOME="${JOB_SCRATCH}/openpi-cache"
 export UV_CACHE_DIR="${PERSIST_CACHE_ROOT}/uv"
 export UV_PROJECT_ENVIRONMENT="${JOB_VENV}"
