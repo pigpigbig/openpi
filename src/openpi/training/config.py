@@ -90,6 +90,9 @@ class DataConfig:
     # If true, will use the LeRobot dataset task to define the prompt.
     prompt_from_task: bool = False
 
+    # Optional LeRobot video backend override (e.g. "pyav" or "torchcodec").
+    video_backend: str | None = None
+
     # Only used for RLDS data loader (ie currently only used for DROID).
     rlds_data_dir: str | None = None
     # Action space for DROID dataset.
@@ -461,6 +464,7 @@ class LeRobotUnitreeG1DataConfig(DataConfigFactory):
     action_dim: int = 28
     use_delta_actions: bool = True
     default_prompt: str | None = None
+    video_backend: str | None = "pyav"
     base_image_keys: Sequence[str] = (
         "observation.images.cam_left_high",
         "observation.images.cam_high",
@@ -502,6 +506,7 @@ class LeRobotUnitreeG1DataConfig(DataConfigFactory):
             data_transforms=data_transforms,
             model_transforms=model_transforms,
             action_sequence_keys=self.action_sequence_keys,
+            video_backend=self.video_backend,
         )
 
 
