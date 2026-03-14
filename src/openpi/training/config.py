@@ -1000,6 +1000,24 @@ _CONFIGS = [
         num_train_steps=20_000,
         batch_size=32,
     ),
+    TrainConfig(
+        # Example config for fine-tuning pi05-base on a Unitree G1 Dex1 simulator dataset.
+        name="pi05_unitree_g1_dex1_pickplace_redblock_sim",
+        model=pi0_config.Pi0Config(
+            pi05=True,
+            action_dim=32,
+            action_horizon=16,
+            discrete_state_input=False,
+        ),
+        data=LeRobotUnitreeG1DataConfig(
+            repo_id="unitreerobotics/G1_Dex1_PickPlaceRedBlock_Dataset_Sim",
+            action_dim=16,
+            base_config=DataConfig(prompt_from_task=True),
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        num_train_steps=20_000,
+        batch_size=32,
+    ),
     #
     # ALOHA Sim configs. This config is used to demonstrate how to train on a simple simulated environment.
     #
