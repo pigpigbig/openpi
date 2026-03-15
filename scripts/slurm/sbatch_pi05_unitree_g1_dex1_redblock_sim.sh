@@ -42,6 +42,7 @@ DATASET_REPO="unitreerobotics/G1_Dex1_PickPlaceRedBlock_Dataset_Sim"
 EXP_NAME="${EXP_NAME:-g1_dex1_redblock_sim_ft}"
 BATCH_SIZE="${BATCH_SIZE:-32}"
 NUM_WORKERS="${NUM_WORKERS:-4}"
+NUM_TRAIN_STEPS="${NUM_TRAIN_STEPS:-20000}"
 WANDB_MODE="${WANDB_MODE:-offline}"
 PERSIST_ROOT="${PERSIST_ROOT:-${HOME}/openpi-runs}"
 CHECKPOINT_BASE_DIR="${CHECKPOINT_BASE_DIR:-${PERSIST_ROOT}/checkpoints}"
@@ -123,6 +124,7 @@ echo "Scratch: ${JOB_SCRATCH}"
 echo "Checkpoint base: ${CHECKPOINT_BASE_DIR}"
 echo "Experiment: ${EXP_NAME}"
 echo "W&B mode: ${WANDB_MODE}"
+echo "Train steps: ${NUM_TRAIN_STEPS}"
 echo "Job venv: ${JOB_VENV}"
 
 if ! command -v uv >/dev/null 2>&1; then
@@ -177,6 +179,7 @@ echo "Starting training"
     --checkpoint-base-dir "${CHECKPOINT_BASE_DIR}" \
     --batch-size "${BATCH_SIZE}" \
     --num-workers "${NUM_WORKERS}" \
+    --num-train-steps "${NUM_TRAIN_STEPS}" \
     "${RUN_MODE_FLAG}"
 
 echo "Training finished"
