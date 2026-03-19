@@ -463,6 +463,7 @@ class LeRobotUnitreeG1DataConfig(DataConfigFactory):
 
     action_dim: int = 28
     use_delta_actions: bool = True
+    num_absolute_gripper_dims: int = 0
     default_prompt: str | None = None
     video_backend: str | None = "pyav"
     base_image_keys: Sequence[str] = (
@@ -493,7 +494,13 @@ class LeRobotUnitreeG1DataConfig(DataConfigFactory):
         )
 
         if self.use_delta_actions:
-            delta_action_mask = _transforms.make_bool_mask(self.action_dim)
+            if self.num_absolute_gripper_dims > 0:
+                delta_action_mask = _transforms.make_bool_mask(
+                    self.action_dim - self.num_absolute_gripper_dims,
+                    -self.num_absolute_gripper_dims,
+                )
+            else:
+                delta_action_mask = _transforms.make_bool_mask(self.action_dim)
             data_transforms = data_transforms.push(
                 inputs=[_transforms.DeltaActions(delta_action_mask)],
                 outputs=[_transforms.AbsoluteActions(delta_action_mask)],
@@ -994,6 +1001,7 @@ _CONFIGS = [
         data=LeRobotUnitreeG1DataConfig(
             repo_id="unitreerobotics/G1_Dex1_MountCamera_Dataset",
             action_dim=16,
+            num_absolute_gripper_dims=2,
             base_config=DataConfig(prompt_from_task=True),
         ),
         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
@@ -1012,6 +1020,7 @@ _CONFIGS = [
         data=LeRobotUnitreeG1DataConfig(
             repo_id="unitreerobotics/G1_Dex1_PickPlaceRedBlock_Dataset_Sim",
             action_dim=16,
+            num_absolute_gripper_dims=2,
             base_config=DataConfig(prompt_from_task=True),
         ),
         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
