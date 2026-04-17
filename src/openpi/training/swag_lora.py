@@ -31,7 +31,10 @@ def _path_to_str(path: nnx.filterlib.PathParts) -> str:
 def extract_lora_params(state: nnx.State) -> dict[str, np.ndarray]:
     """Extract LoRA params as a host-side mapping from path string to numpy array."""
     lora_state = state.filter(lora_param_filter())
-    return { _path_to_str(path): np.asarray(jax.device_get(value.value), dtype=np.float32) for path, value in lora_state.flat_state() }
+    return {
+        _path_to_str(path): np.asarray(jax.device_get(value.value), dtype=np.float32)
+        for path, value in lora_state.flat_state().items()
+    }
 
 
 @dataclasses.dataclass

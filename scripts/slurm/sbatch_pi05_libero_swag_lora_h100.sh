@@ -20,8 +20,8 @@
 #SBATCH --mem=64G
 #SBATCH --gres=gpu:h100:1
 #SBATCH --time=24:00:00
-#SBATCH -o slurm-%x-%j.out
-#SBATCH -e slurm-%x-%j.err
+#SBATCH -o /home/haomingj/qiaoan/openpi/logs/%x_%j.out
+#SBATCH -e /home/haomingj/qiaoan/openpi/logs/%x_%j.err
 
 set -euo pipefail
 
@@ -37,8 +37,9 @@ REPO_ROOT="$(cd -- "${REPO_ROOT}" && pwd)"
 CONFIG_NAME="pi05_libero_lora"
 DATASET_REPO="physical-intelligence/libero"
 
-EXP_NAME="${EXP_NAME:-pi05_libero_swag_lora_seed1}"
-SEED="${SEED:-1}"
+EXP_NAME="${EXP_NAME:-pi05_libero_swag_lora_job${SLURM_JOB_ID:-manual}}"
+DEFAULT_SEED="${SLURM_JOB_ID:-1}"
+SEED="${SEED:-$DEFAULT_SEED}"
 BATCH_SIZE="${BATCH_SIZE:-32}"
 NUM_WORKERS="${NUM_WORKERS:-4}"
 NUM_TRAIN_STEPS="${NUM_TRAIN_STEPS:-30000}"
@@ -54,13 +55,15 @@ JOB_SCRATCH="/scratch/${USER}/openpi/${SLURM_JOB_ID}"
 JOB_VENV="${JOB_SCRATCH}/.venv"
 PERSIST_CACHE_ROOT="${PERSIST_CACHE_ROOT:-${PERSIST_ROOT}/cache}"
 PERSIST_HF_HOME="${PERSIST_HF_HOME:-${PERSIST_CACHE_ROOT}/huggingface}"
+PERSIST_OPENPI_DATA_HOME="${PERSIST_OPENPI_DATA_HOME:-${PERSIST_CACHE_ROOT}/openpi-data}"
 export PATH="${HOME}/.local/bin:${PATH}"
 
 mkdir -p \
+    "${REPO_ROOT}/logs" \
     "${JOB_SCRATCH}/tmp" \
-    "${JOB_SCRATCH}/openpi-cache" \
     "${JOB_SCRATCH}/xdg-cache" \
     "${JOB_SCRATCH}/matplotlib" \
+    "${PERSIST_OPENPI_DATA_HOME}" \
     "${PERSIST_CACHE_ROOT}/uv" \
     "${PERSIST_HF_HOME}/hub" \
     "${PERSIST_HF_HOME}/lerobot" \
@@ -94,7 +97,7 @@ else
     echo "HF token not found; Hugging Face downloads may be rate-limited"
 fi
 
-export OPENPI_DATA_HOME="${JOB_SCRATCH}/openpi-cache"
+export OPENPI_DATA_HOME="${PERSIST_OPENPI_DATA_HOME}"
 export UV_CACHE_DIR="${PERSIST_CACHE_ROOT}/uv"
 export UV_PROJECT_ENVIRONMENT="${JOB_VENV}"
 export UV_LINK_MODE=copy
@@ -106,6 +109,7 @@ export TOKENIZERS_PARALLELISM=false
 export PYTHONUNBUFFERED=1
 export XLA_PYTHON_CLIENT_MEM_FRACTION="${XLA_PYTHON_CLIENT_MEM_FRACTION:-0.90}"
 export GIT_LFS_SKIP_SMUDGE=1
+export HF_HUB_DISABLE_XET=1
 
 if ! command -v git-lfs >/dev/null 2>&1; then
     echo "git-lfs not found; disabling LFS filters for dependency checkout"
@@ -126,7 +130,9 @@ echo "Host: $(hostname)"
 echo "Repo: ${REPO_ROOT}"
 echo "Scratch: ${JOB_SCRATCH}"
 echo "Checkpoint base: ${CHECKPOINT_BASE_DIR}"
+echo "OPENPI_DATA_HOME: ${OPENPI_DATA_HOME}"
 echo "Experiment: ${EXP_NAME}"
+echo "Default seed: ${DEFAULT_SEED}"
 echo "Seed: ${SEED}"
 echo "W&B mode: ${WANDB_MODE}"
 echo "Train steps: ${NUM_TRAIN_STEPS}"
